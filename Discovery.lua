@@ -348,9 +348,38 @@ local function ApplyOverrides(info)
     local scale  = tonumber(cat.scale) or 1.0
     local hidden = cat.hidden and cat.hidden[info.npcID] == true
 
-    -- For CVar-less categories (Hunter Pets etc.) the master toggle becomes
-    -- a per-plate hide.
-    if def and not def.cvar and cat.enabled ~= "1" then
+    -- 1.32.12: Master toggle off = hide the plate, for ALL categories
+    -- (not just CVar-less ones).
+    --
+    -- Why we used to gate on `not def.cvar`: CVar-based categories
+    -- (enemyGuardians, enemyMinions, enemyTotems, etc.) relied on
+    -- Blizzard's nameplate engine to suppress spawn via the CVar, so
+    -- we didn't need to enforce a per-plate hide here.
+    --
+    -- Why that broke in 1.32.4: when target/mouseover capture
+    -- (_CaptureSummonFromToken) reclassifies a plate post-spawn from
+    -- "enemyPlayers" (the anonymised-fallback catch-all) into its
+    -- real summon category like "enemyGuardians", the plate is
+    -- ALREADY VISIBLE.  The CVar only prevents future spawns; it
+    -- doesn't despawn or hide an existing plate.  Without an
+    -- alpha-0 enforcement, the user toggling "Enemy Guardians" off
+    -- has no effect on an anonymised gargoyle whose true type we
+    -- only learned after the user looked at it.
+    --
+    -- The fix: any plate whose category is currently disabled gets
+    -- alpha-0'd here, regardless of whether the category has a CVar.
+    -- For CVar categories this is belt-and-suspenders (CVar prevents
+    -- spawn; we hide the rare leak); for CVar-less categories this
+    -- is unchanged behaviour (the only enforcement mechanism).
+    --
+    -- Side effects considered:
+    --   * Friendly* categories with default enabled="0": Blizzard's
+    --     CVar already suppresses spawn, but if a plate somehow
+    --     reaches ApplyOverrides we now hide it.  Same intent as
+    --     the user's toggle.
+    --   * Enemy* categories with default enabled="1": user almost
+    --     never disables these; if they do, hiding is correct.
+    if cat.enabled ~= "1" then
         hidden = true
     end
 
@@ -654,11 +683,25 @@ local function _CaptureSummonFromToken(token)
     -- read UnitCreatureType / UnitClassification / GUID etc., and
     -- because the token is "target"/"mouseover" those return clean
     -- non-secret values.
+    --
+    -- 1.32.13: also extract npcID alongside guidKind.  Without
+    -- this, the in-place reclassification below couldn't propagate
+    -- npcID to active[unit].npcID, which broke the per-NPC hide
+    -- list (cat.hidden[npcID]) for anonymised plates — once we
+    -- reclassified them into enemyDKPets / enemyGuardians / etc.,
+    -- the npcID stayed nil from the initial enemyPlayers fallback
+    -- and `cat.hidden[nil]` always returned nil.
     local guid = UnitGUID(token)
     local guidKind
+    local capturedNpcID
     if guid and not (issecretvalue and issecretvalue(guid)) then
-        local k = strsplit("-", guid)
-        if k and not (issecretvalue and issecretvalue(k)) then guidKind = k end
+        local k, _, _, _, _, npcid = strsplit("-", guid)
+        if k and not (issecretvalue and issecretvalue(k)) then
+            guidKind = k
+            if (k == "Creature" or k == "Pet" or k == "Vehicle") and npcid then
+                capturedNpcID = tonumber(npcid)
+            end
+        end
     end
     if not IsPlayerSummon(token, guidKind, plate) then return end
 
@@ -690,6 +733,7 @@ local function _CaptureSummonFromToken(token)
         type     = stype,
         isFriend = isFriend,
         name     = name,
+        npcID    = capturedNpcID,
     }
 
     -- Re-classify the plate in the active[] table.
@@ -729,6 +773,12 @@ local function _CaptureSummonFromToken(token)
                 -- writes, no secure-action taint.
                 info.categoryID = newCatID
                 info.summonType = stype
+                -- 1.32.13: propagate npcID too so per-NPC hide
+                -- (cat.hidden[npcID]) works after reclassification.
+                -- Only overwrite if we extracted a real one from the
+                -- non-secret target/mouseover GUID — don't blow
+                -- away a previously-known npcID with nil.
+                if capturedNpcID then info.npcID = capturedNpcID end
             end
         end
     end
