@@ -1,0 +1,19 @@
+## Interface: 120005, 120006, 120007, 120100, 120105, 120200
+## Title: MyNamePlates
+## Notes: Tabbed control for every nameplate category, with per-NPC toggles for totems, guardians, minions, and minor units.
+## Author: You
+## Version: 1.32.11
+## SavedVariables: MyNamePlatesDB
+## DefaultState: Enabled
+## OptionalDeps: BetterBlizzPlates, ElvUI, Plater
+
+CVars.lua
+Categories.lua
+NpcData.lua
+SpecSpells.lua
+Indicators.lua
+Auras.lua
+Labels.lua
+Core.lua
+Discovery.lua
+UI.lua
