@@ -29,6 +29,16 @@ local function BuildDefaults()
             showFriendly = true,
             showEnemy    = true,
             list         = {},      -- user-added entries; merged with AURA_LIST_DEFAULT
+            -- 1.33.0: category-based detection via C_UnitAuras.GetUnitAuras
+            -- filter strings.  Catches any CC / big defensive / external
+            -- defensive Blizzard classifies, so users don't need to
+            -- maintain a per-patch spell-ID list.  User's explicit
+            -- disable in `list` still wins over category detection.
+            categories = {
+                bigDefensive      = true,
+                externalDefensive = true,
+                cc                = true,
+            },
         },
         labels = {
             hideDefaultName = false,

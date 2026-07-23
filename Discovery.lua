@@ -1463,7 +1463,13 @@ local function ReapplyAll()
     end
 end
 
-f:SetScript("OnEvent", function(_, event, unit)
+-- Event dispatch.  `arg2` is unit's second event payload:
+--   * UNIT_AURA (10.x+):  updateInfo (AuraUpdateInfo) -- forwarded to
+--                         ns:UpdateAurasForUnit so Auras.lua's
+--                         incremental path can apply deltas without a
+--                         full rescan.
+--   * Other events: ignored.
+f:SetScript("OnEvent", function(_, event, unit, arg2)
     pcall(function()
         -- Bail on secret-string unit tokens (forbidden arena anonymized
         -- tokens) BEFORE any active[unit] indexing or downstream work.
@@ -1535,7 +1541,13 @@ f:SetScript("OnEvent", function(_, event, unit)
                 -- plate frame recycled into a player would still
                 -- show the totem overlay until a fresh target.
                 if ns.ClearSummonTypeByPlate then pcall(ns.ClearSummonTypeByPlate, ns, plate) end
-                if plate.MyNP_AuraIcon then
+                -- 1.33.0: clear per-plate aura cache so Blizzard's
+                -- next unit-recycle onto this plate starts with a
+                -- clean tracked set (no stale auraInstanceIDs from
+                -- the previous unit).  Also hides the icon.
+                if ns.ClearAuraStateForPlate then
+                    pcall(ns.ClearAuraStateForPlate, ns, plate)
+                elseif plate.MyNP_AuraIcon then
                     pcall(plate.MyNP_AuraIcon.Hide, plate.MyNP_AuraIcon)
                 end
             end)
@@ -1545,8 +1557,13 @@ f:SetScript("OnEvent", function(_, event, unit)
             end
             -- Auras can change without touching alpha/scale, so update
             -- the watched-aura icon for the affected unit specifically.
+            -- 1.33.0: forward the `updateInfo` (AuraUpdateInfo) second
+            -- payload so Auras.lua's incremental path can apply the
+            -- delta (added/updated/removed aura instance IDs) instead
+            -- of a full rescan.  Falls back to full scan when
+            -- updateInfo.isFullUpdate or on first-scan-per-plate.
             if event == "UNIT_AURA" and unit and ns.UpdateAurasForUnit then
-                pcall(ns.UpdateAurasForUnit, ns, unit)
+                pcall(ns.UpdateAurasForUnit, ns, unit, arg2)
             end
         else
             -- PLAYER_TARGET_CHANGED, ARENA_*, GROUP_ROSTER_UPDATE, etc.

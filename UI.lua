@@ -705,6 +705,28 @@ local function BuildAurasPanel(panel)
         function(on) ns:SetAurasOption("showEnemy", on and true or false) end)
     cbE:SetPoint("TOPLEFT", 8, y); y = y - ROW - 6
 
+    -- ── Auto-detect categories (1.33.0) ───────────────────────────
+    -- Category-based detection picks up any CC / defensive Blizzard
+    -- classifies, even when it's NOT in the curated spellID list.
+    -- User's explicit disable in the tracked-spell list still wins.
+    local catHeading = MakeHeading(content, "Auto-detect categories")
+    catHeading:SetPoint("TOPLEFT", 0, y); y = y - 22
+
+    local cbCatCC = MakeCheckbox(content, "Crowd control (Cyclone, Poly, Fear, Sap, ...)",
+        function() return ns:IsAuraCategoryEnabled("cc") end,
+        function(on) ns:SetAuraCategoryEnabled("cc", on) end)
+    cbCatCC:SetPoint("TOPLEFT", 8, y); y = y - ROW
+
+    local cbCatBD = MakeCheckbox(content, "Big defensives (Divine Shield, Ice Block, Bubble, ...)",
+        function() return ns:IsAuraCategoryEnabled("bigDefensive") end,
+        function(on) ns:SetAuraCategoryEnabled("bigDefensive", on) end)
+    cbCatBD:SetPoint("TOPLEFT", 8, y); y = y - ROW
+
+    local cbCatED = MakeCheckbox(content, "External defensives (Sac, PS, GS, Ironbark, ...)",
+        function() return ns:IsAuraCategoryEnabled("externalDefensive") end,
+        function(on) ns:SetAuraCategoryEnabled("externalDefensive", on) end)
+    cbCatED:SetPoint("TOPLEFT", 8, y); y = y - ROW - 6
+
     -- Anchor
     local lbl = MakeLabel(content, "Anchor:", { 0.9, 0.9, 0.9 })
     lbl:SetPoint("TOPLEFT", 8, y - 4)
