@@ -60,6 +60,35 @@ ns.AURA_LIST_DEFAULT = {
 }
 
 ----------------------------------------------------------------------
+-- Resolve the BEST unit token for an aura scan on this plate.
+--
+-- Prefers the ArenaMap canonical token ("arena1..3") for forbidden
+-- arena plates because AuraUtil.ForEachAura on the anonymised per-
+-- plate token returns nothing on retail Midnight; the canonical arena
+-- token is the only one that surfaces aura data for those plates.
+-- Falls back to uf.unit for non-forbidden plates.
+--
+-- IMPORTANT: this must be declared BEFORE any function that calls it
+-- (e.g. UpdateAurasForUnit).  Lua binds local-function identifiers at
+-- the point of the `local function` statement — an earlier caller
+-- would see it as a nil global and error silently inside the caller's
+-- pcall wrapper.  1.32.13 had this bug: _ResolveUnitForPlate was
+-- declared AFTER UpdateAurasForUnit, so every UNIT_AURA event on
+-- arena/BG enemy plates threw "attempt to call a nil value" that
+-- got swallowed by pcall — auras only ever refreshed via the
+-- RefreshAllAuras full-scan path, never per-unit.
+----------------------------------------------------------------------
+local function _ResolveUnitForPlate(plate)
+    if ns.GetArenaUnitForPlate then
+        local arenaUnit = ns:GetArenaUnitForPlate(plate)
+        if arenaUnit then return arenaUnit end
+    end
+    local uf = plate and plate.UnitFrame
+    if not uf then return nil end
+    return uf.unit or uf.displayedUnit
+end
+
+----------------------------------------------------------------------
 -- Per-plate icon overlay
 ----------------------------------------------------------------------
 ----------------------------------------------------------------------
@@ -111,13 +140,22 @@ local function _GetIcon(plate)
     if plate.MyNP_AuraIcon then return plate.MyNP_AuraIcon end
     local uf = plate.UnitFrame
     if not uf then return nil end
-    -- Skip forbidden plates — CreateFrame as child of forbidden uf
-    -- propagates addon taint up the secure chain ("Interface action
-    -- failed because of an AddOn" on every secure action against
-    -- arena enemies).  Aura icons just won't render on those plates;
-    -- the watched-aura logic itself is unaffected for non-forbidden.
-    if (plate.IsForbidden and plate:IsForbidden())
-       or (uf.IsForbidden and uf:IsForbidden()) then return nil end
+    -- Match Labels.lua's forbidden-check pattern: only bail on
+    -- `uf:IsForbidden()`, NOT on the top-level plate.  In retail
+    -- Midnight 12.x, arena TOTEM / PET plates have a forbidden
+    -- top-level plate BUT a NON-forbidden UnitFrame — and creating
+    -- widgets as children of a non-forbidden uf is safe in that case
+    -- (same rule that lets us reposition uf.name on those plates).
+    -- The prior "check both" behaviour meant no aura icons ever
+    -- spawned on arena totem/pet plates, so PvP immunities /
+    -- defensives were invisible in arena.
+    --
+    -- Truly forbidden UnitFrames (arena enemy PLAYER plates on some
+    -- patches) still bail here — CreateFrame as a child of a
+    -- forbidden uf taints the parent and cascades "Interface action
+    -- failed" on every secure action against those units.  We accept
+    -- "no aura on those plates" rather than the taint cascade.
+    if uf.IsForbidden and uf:IsForbidden() then return nil end
 
     local f = CreateFrame("Frame", nil, uf)
     f:SetSize(24, 24)
@@ -321,25 +359,6 @@ function ns:UpdateAurasForUnit(unit)
     -- whose own uf.unit is anonymized.
     local scanUnit = _ResolveUnitForPlate(plate) or unit
     pcall(_Apply, plate, scanUnit, MyNamePlatesDB.auras, _MergedList())
-end
-
-----------------------------------------------------------------------
--- Resolve the BEST unit token for an aura scan on this plate.
--- Prefers the ArenaMap canonical token ("arena1..3") for forbidden
--- arena plates because AuraUtil.ForEachAura on anonymized per-plate
--- tokens returns nothing on retail Midnight; the canonical token is
--- the only one that surfaces aura data for those plates.  Falls back
--- to uf.unit for non-forbidden plates.
-----------------------------------------------------------------------
-local function _ResolveUnitForPlate(plate)
-    -- ArenaMap-tagged plates: prefer the canonical arena token.
-    if ns.GetArenaUnitForPlate then
-        local arenaUnit = ns:GetArenaUnitForPlate(plate)
-        if arenaUnit then return arenaUnit end
-    end
-    local uf = plate and plate.UnitFrame
-    if not uf then return nil end
-    return uf.unit or uf.displayedUnit
 end
 
 function ns:RefreshAllAuras()

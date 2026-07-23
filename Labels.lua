@@ -966,21 +966,65 @@ local function _RepositionName(plate)
 
     local unit = uf.unit or uf.displayedUnit
     if not unit then return end
-    -- Bail if the unit token itself is a secret string (forbidden
-    -- arena anonymized tokens).  Comparing or hashing a secret string
-    -- from inside our addon's execution context taints us, even on
-    -- plates whose plate/uf flags say non-forbidden — Blizzard
-    -- recycles plates between unit assignments and the new unit may
-    -- be secret while the plate isn't (yet) flagged forbidden.
-    if issecretvalue and issecretvalue(unit) then return end
 
-    local cfg = _PickNameConfig(plate, unit)
-    if not cfg then
-        _RestoreDefaultName(plate, uf)
-        return
+    -- Retail Midnight 12.x tags anonymised arena enemy summon plates
+    -- (totems, pets) with SECRET-STRING uf.unit tokens.  Comparing or
+    -- hashing a secret string from inside our addon's execution
+    -- context taints us — so we CANNOT call UnitIsFriend / any Unit*
+    -- API on a secret unit here.
+    --
+    -- BUT: _CaptureSummonFromToken (Discovery.lua) captures the
+    -- summon's name / type / isFriend from the NON-secret "target" /
+    -- "mouseover" unit token when the user interacts with the plate,
+    -- and caches those values keyed by plate frame reference (Lua
+    -- table identity, never secret).  On secret-unit plates we
+    -- render the name overlay entirely from that cache — no touching
+    -- of the secret unit token — which is exactly what BBP does for
+    -- its arena totem name overrides.
+    --
+    -- Two branches:
+    --   * Non-secret unit — original code path.
+    --   * Secret unit + cached summon name — cached-data-only path
+    --     below.  If unit is secret and there's no cache, bail (we
+    --     have no name to render and no way to safely resolve one).
+    local unitSecret = issecretvalue and issecretvalue(unit)
+    local cachedSummonName = plate and ns.GetSummonNameByPlate
+                             and ns:GetSummonNameByPlate(plate)
+    if unitSecret and not cachedSummonName then return end
+
+    local cfg, isFriend
+    if unitSecret then
+        -- Secret unit + cache present.  Route directly through the
+        -- petTotemName block (this IS a summon by construction — the
+        -- cache is only populated by _CaptureSummonFromToken for
+        -- classified summons) and use cached isFriend for the
+        -- applyFriendly / applyEnemy gate.
+        local L = MyNamePlatesDB and MyNamePlatesDB.labels
+        cfg = L and L.petTotemName
+        if not (cfg and cfg.enabled == "1") then return end
+
+        -- Per-summon-type filter using the cached type.
+        local cachedType = ns.GetSummonTypeByPlate
+                           and ns:GetSummonTypeByPlate(plate)
+        if cfg.types and cachedType and cfg.types[cachedType] == false then
+            return
+        end
+
+        -- Cached isFriend from the non-secret capture token.
+        -- Default to enemy when the cache doesn't have it (rare —
+        -- capture always sets it, but be defensive).
+        local cf = ns.GetSummonFriendByPlate
+                   and ns:GetSummonFriendByPlate(plate)
+        isFriend = cf == true
+    else
+        cfg = _PickNameConfig(plate, unit)
+        if not cfg then
+            _RestoreDefaultName(plate, uf)
+            return
+        end
+        isFriend = UnitIsFriend("player", unit)
     end
 
-    local isFriend = UnitIsFriend("player", unit)
     if isFriend and not cfg.applyFriendly then return end
     if (not isFriend) and not cfg.applyEnemy then return end
 
@@ -1141,21 +1185,46 @@ local function _OnCompactUpdateName(frame)
         if issecretvalue and issecretvalue(frame) then return end
         local unit = frame.unit
         if not unit then return end
-        if issecretvalue and issecretvalue(unit) then return end
-        -- Gate to nameplates only — :find on a non-secret unit
-        -- token is safe (string library, plain-text mode).
-        if type(unit) ~= "string" then return end
-        if not unit:find("nameplate") then return end
+
+        -- 1.32.14: don't bail on secret unit tokens here.  The
+        -- summon cache lets _RepositionName render totem names on
+        -- anonymised arena plates without ever touching the secret
+        -- unit — see _RepositionName's cached-data branch.  If the
+        -- plate has no cached summon and the unit is secret, then
+        -- _RepositionName itself will bail; but we still need to
+        -- get past this gate to give it the chance.
+        local unitSecret = issecretvalue and issecretvalue(unit)
+        if type(unit) ~= "string" then
+            -- Secret unit tokens can be non-string; :find on them
+            -- would taint us.  Only walk up to the plate via the
+            -- back-pointer in that case.
+            if not unitSecret then return end
+        else
+            if not unit:find("nameplate") then return end
+        end
 
         -- frame here IS the UnitFrame (Blizzard passes the
         -- CompactUnitFrame, not the top-level NamePlate).  Walk up
         -- to the plate via the namePlateFrame back-pointer that
-        -- NamePlateUnitFrameTemplate sets.
+        -- NamePlateUnitFrameTemplate sets.  Prefer the back-pointer
+        -- for secret-unit plates (calling GetNamePlateForUnit with
+        -- a secret token would compare it against internals and
+        -- risks taint).
         local plate = frame.namePlateFrame
-        if not plate and C_NamePlate and C_NamePlate.GetNamePlateForUnit then
+        if not plate and not unitSecret
+           and C_NamePlate and C_NamePlate.GetNamePlateForUnit then
             plate = C_NamePlate.GetNamePlateForUnit(unit, true)
         end
         if not plate then return end
+
+        -- For secret-unit plates, only proceed when we have a
+        -- cached summon name (otherwise _RepositionName has
+        -- nothing to render).
+        if unitSecret then
+            local hasCache = ns.GetSummonNameByPlate
+                             and ns:GetSummonNameByPlate(plate) ~= nil
+            if not hasCache then return end
+        end
 
         _HookName(plate)
         _RepositionName(plate)
@@ -1267,57 +1336,70 @@ function ns:RefreshAllLabels()
     for _, plate in ipairs(C_NamePlate.GetNamePlates(true)) do
         local uf = plate.UnitFrame
         local unit = uf and (uf.unit or uf.displayedUnit)
-        -- Skip secret-string unit tokens — see _RepositionName for the
-        -- full rationale.  Forbidden arena tokens reach this loop on
-        -- recycled plates; using them in comparisons (UnitIsFriend,
-        -- UnitIsPlayer, table lookups) taints the addon execution.
-        if unit and not (issecretvalue and issecretvalue(unit)) then
-            -- Friend/enemy/player resolution with ArenaMap fallback.
-            local isFriend, isPlayer
-            local ok1, f = pcall(UnitIsFriend, "player", unit)
-            if ok1 then isFriend = f end
-            local ok2, p = pcall(UnitIsPlayer, unit)
-            if ok2 then isPlayer = p end
-            if ns.GetArenaUnitForPlate
-               and ns:GetArenaUnitForPlate(plate)
-            then
-                isFriend = false
-                isPlayer = true
+        if not unit then
+            -- Nothing we can do without a unit token.
+        else
+            local unitSecret = issecretvalue and issecretvalue(unit)
+            -- 1.32.14: even when uf.unit is a SECRET-STRING token
+            -- (retail Midnight 12.x anonymised arena enemy summon
+            -- plate), we still want to run the NAME path if the
+            -- summon cache has data for this plate.  The cache is
+            -- populated by _CaptureSummonFromToken (Discovery.lua)
+            -- from a NON-secret target/mouseover token, and
+            -- _RepositionName has its own cached-data branch that
+            -- avoids touching the secret unit.  Previously this
+            -- outer `if unit and not secret` guard skipped the
+            -- whole plate, so target-capture correctly stashed the
+            -- totem name but the label pipeline never applied it.
+            local hasSummonCache = plate and ns.GetSummonNameByPlate
+                                   and ns:GetSummonNameByPlate(plate) ~= nil
+
+            if (not unitSecret) or hasSummonCache then
+                -- SPEC block needs friend/enemy/player resolution.
+                -- Do it only for non-secret units — spec doesn't
+                -- render on cached-only secret plates because we
+                -- don't have a per-plate spec cache in this branch.
+                local isFriend, isPlayer
+                if not unitSecret then
+                    local ok1, f = pcall(UnitIsFriend, "player", unit)
+                    if ok1 then isFriend = f end
+                    local ok2, p = pcall(UnitIsPlayer, unit)
+                    if ok2 then isPlayer = p end
+                    if ns.GetArenaUnitForPlate
+                       and ns:GetArenaUnitForPlate(plate)
+                    then
+                        isFriend = false
+                        isPlayer = true
+                    end
+                end
+
+                -- NAME — reposition Blizzard's existing uf.name.
+                -- Wrapped in its OWN pcall so any error here can't
+                -- abort the spec block below.
+                pcall(function()
+                    if anyNameOn then
+                        _HookName(plate)
+                        _RepositionName(plate)
+                    elseif uf.name and uf.name.MyNP_moved then
+                        _RepositionName(plate)
+                    end
+                end)
+
+                -- SPEC — custom overlay.  Only for non-secret units.
+                if not unitSecret then
+                    pcall(function()
+                        local sfs = plate.MyNP_SpecText
+                        if specCfg and specCfg.enabled == "1" and isPlayer
+                           and ((isFriend and specCfg.applyFriendly)
+                                or ((not isFriend) and specCfg.applyEnemy))
+                        then
+                            _ApplySpec(plate, unit, specCfg)
+                        else
+                            if sfs then sfs:Hide() end
+                        end
+                    end)
+                end
             end
-
-            -- NAME — reposition Blizzard's existing uf.name.  Single
-            -- code path for both player and summon plates; the picker
-            -- (_PickNameConfig) chooses the right config block and
-            -- _RepositionName moves the FontString to the user's
-            -- offset and calls SetIgnoreParentAlpha(true) so it
-            -- doesn't fade with the plate's selection alpha.
-            --
-            -- Wrapped in its OWN pcall so any error here can't abort
-            -- the spec block below — they're functionally independent
-            -- and a regression in one must not break the other.
-            -- (This is the safety net behind the recurring "specs
-            --  disappeared" symptom we've had to fix more than once.)
-            pcall(function()
-                if anyNameOn then
-                    _HookName(plate)
-                    _RepositionName(plate)
-                elseif uf.name and uf.name.MyNP_moved then
-                    _RepositionName(plate)
-                end
-            end)
-
-            -- SPEC — custom overlay.  Independent pcall.
-            pcall(function()
-                local sfs = plate.MyNP_SpecText
-                if specCfg and specCfg.enabled == "1" and isPlayer
-                   and ((isFriend and specCfg.applyFriendly)
-                        or ((not isFriend) and specCfg.applyEnemy))
-                then
-                    _ApplySpec(plate, unit, specCfg)
-                else
-                    if sfs then sfs:Hide() end
-                end
-            end)
         end
     end
 end

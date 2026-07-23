@@ -1324,7 +1324,7 @@ local function OnUnitAdded(unit)
         end
     end
 
-    -- 1.32.11: BBP-PATTERN PRIMARY name population.
+    -- 1.32.11/1.32.14: BBP-PATTERN PRIMARY name population.
     --
     -- BBP's primary totem-name flow is:
     --     guid  = UnitGUID(unit)               -- npcID extractable
@@ -1332,22 +1332,36 @@ local function OnUnitAdded(unit)
     --     npcData = BetterBlizzPlatesDB.totemIndicatorNpcList[npcID]
     --     frame.name:SetText(npcData.name)     -- override Blizzard's text
     --
-    -- Our equivalent: we just resolved npcID + summonType + (via
-    -- GetNpcRecord) the curated NPC_DATA entry with its `name` field.
-    -- Mirror BBP by stashing that name on the plate's _summonByPlate
-    -- cache here — Labels._RepositionName picks it up and SetTexts
-    -- uf.name with it on every refresh + every CompactUnitFrame_UpdateName
-    -- hook fire.  This is the PRIMARY path (works the moment a totem
-    -- spawns, no user interaction required) — _CaptureSummonFromToken
-    -- on PLAYER_TARGET_CHANGED / UPDATE_MOUSEOVER_UNIT remains as the
+    -- Our equivalent stashes the resolved name on _summonByPlate here,
+    -- and Labels._RepositionName does the SetText on uf.name every
+    -- refresh + every CompactUnitFrame_UpdateName hook fire.  This is
+    -- the PRIMARY path (works the moment a totem spawns, no user
+    -- interaction required); _CaptureSummonFromToken on
+    -- PLAYER_TARGET_CHANGED / UPDATE_MOUSEOVER_UNIT remains as the
     -- FALLBACK for plates where UnitGUID is secret-tagged (retail
-    -- Midnight 12.x arena anonymisation) so the npcID extract fails.
+    -- Midnight 12.x arena anonymisation).
     --
-    -- Conditions to populate:
-    --   * summonType is set (this is a recognized summon, not a
-    --     regular NPC or player)
-    --   * we have an npcID (GUID was non-secret and parseable)
-    --   * we have a curated/discovered NPC_DATA record with a name
+    -- 1.32.14: Loosened from the prior "summonType AND npcID" gate to
+    -- just "summonType is set".  Previously, when GUID was secret or
+    -- otherwise unparseable but classification succeeded via the
+    -- name-based fallback in _NpcDataType (uf.name:GetText() reverse
+    -- lookup against NPC_DATA), we had a valid summonType but nil
+    -- npcID — and the old gate skipped the seed entirely.  Net result
+    -- on those plates: correct classification (right category, right
+    -- hide/highlight rules) but no name overlay, so the user saw an
+    -- empty totem plate at our custom offset.
+    --
+    -- The name resolution chain (widest first):
+    --   1. NPC_DATA record's `name` (from GetNpcRecord) — the
+    --      canonical curated / auto-discovered name.  Requires npcID.
+    --   2. ns:GetPlateName(unit, plate) — UnitName(unit) when non-
+    --      secret, then uf.name:GetText() when Blizzard has rendered
+    --      the actual name onto the FontString.  Works when npcID
+    --      is nil.
+    --
+    -- We deliberately do NOT stash placeholder names ("NPC 12345"),
+    -- since those aren't user-meaningful and would prevent a later
+    -- _CaptureSummonFromToken from overwriting with the real name.
     --
     -- We pull the friend flag from UnitIsFriend on the live unit
     -- token (non-secret if we got here past the issecretvalue gate),
@@ -1355,14 +1369,29 @@ local function OnUnitAdded(unit)
     -- _PickNameConfig's per-type filter + applyFriendly / applyEnemy
     -- gating works identically whether the name came from the
     -- primary path here or the fallback capture.
-    if summonType and npcID then
-        local rec = GetNpcRecord(npcID)
-        local resolvedName = rec and rec.name
-        if resolvedName
-           and not (issecretvalue and issecretvalue(resolvedName))
-           and resolvedName ~= ""
-           and not (resolvedName == ("NPC " .. tostring(npcID)))  -- placeholder, skip
-        then
+    if summonType then
+        local resolvedName
+        if npcID then
+            local rec = GetNpcRecord(npcID)
+            if rec and rec.name
+               and rec.name ~= ""
+               and rec.name ~= ("NPC " .. tostring(npcID))
+               and not (issecretvalue and issecretvalue(rec.name)) then
+                resolvedName = rec.name
+            end
+        end
+        -- Fallback: read the name Blizzard already rendered.  In
+        -- 12.x this pulls uf.name:GetText() when UnitName is nil or
+        -- secret — the same mechanism BBP relies on to know what
+        -- name to display for arena/BG totems.
+        if not resolvedName and ns.GetPlateName then
+            local pn = ns:GetPlateName(unit, plate)
+            if pn and pn ~= ""
+               and not (issecretvalue and issecretvalue(pn)) then
+                resolvedName = pn
+            end
+        end
+        if resolvedName then
             local isFriend = false
             local okF, f = pcall(UnitIsFriend, "player", unit)
             if okF then isFriend = f and true or false end
@@ -1370,6 +1399,7 @@ local function OnUnitAdded(unit)
                 type     = summonType,
                 isFriend = isFriend,
                 name     = resolvedName,
+                npcID    = npcID,
             }
         end
     end
