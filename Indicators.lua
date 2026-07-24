@@ -809,6 +809,37 @@ local function _ApplyClassMarkerOnPlate(plate, classFile, cfg)
     end)
 end
 
+----------------------------------------------------------------------
+-- 1.34.2: shared upvalue state buffers for the per-plate pcall bodies
+-- below.  RefreshTargetArrow / RefreshHealerCrosses / RefreshClassIcons
+-- all run at 10 Hz from Discovery's refresh drainer.  In arena with
+-- 20 plates each pcall(function()...) allocated a fresh closure per
+-- plate per refresh; the shared-state + named-body pattern below
+-- brings that to zero allocations.
+--
+-- All bodies are single-threaded and finish synchronously before the
+-- next plate iteration, so cross-plate state overwrite is safe.
+----------------------------------------------------------------------
+local _targetState = { plate = nil, cfg = nil, useColor = false }
+local function _ApplyTargetOnPlate()
+    local plate = _targetState.plate
+    local cfg   = _targetState.cfg
+    local tex = _GetTarget(plate)
+    if not tex then return end
+    _ApplyMarker(tex, _SafeAnchorFor(plate), cfg)
+    if _targetState.useColor then
+        local c = cfg.color
+        if c then
+            tex:SetVertexColor(c[1] or 1, c[2] or 1, c[3] or 1, c[4] or 1)
+        else
+            tex:SetVertexColor(1, 1, 1, 1)
+        end
+    else
+        tex:SetVertexColor(1, 1, 1, 1)
+    end
+    tex:Show()
+end
+
 function ns:RefreshTargetArrow()
     if not (MyNamePlatesDB and MyNamePlatesDB.indicators
             and MyNamePlatesDB.indicators.target) then return end
@@ -819,56 +850,99 @@ function ns:RefreshTargetArrow()
     -- Test mode: arrow over EVERY plate so user can position it.
     if ns.testMode and ns.testMode.target then
         if cfg.enabled ~= "1" then return end
+        _targetState.cfg      = cfg
+        _targetState.useColor = false
         for _, plate in ipairs(C_NamePlate.GetNamePlates(true)) do
-            pcall(function()
-                local tex = _GetTarget(plate)
-                if not tex then return end
-                _ApplyMarker(tex, _SafeAnchorFor(plate), cfg)
-                tex:SetVertexColor(1, 1, 1, 1)
-                tex:Show()
-            end)
+            _targetState.plate = plate
+            pcall(_ApplyTargetOnPlate)
         end
         return
     end
 
     if cfg.enabled ~= "1" or not UnitExists("target") then return end
 
-    pcall(function()
-        local plate = C_NamePlate.GetNamePlateForUnit("target", true)
-        if not plate then return end
-        local tex = _GetTarget(plate)
-        if not tex then return end
-        _ApplyMarker(tex, _SafeAnchorFor(plate), cfg)
-        local c = cfg.color
-        if c then
-            tex:SetVertexColor(c[1] or 1, c[2] or 1, c[3] or 1, c[4] or 1)
-        else
+    local plate = C_NamePlate.GetNamePlateForUnit("target", true)
+    if not plate then return end
+    _targetState.plate    = plate
+    _targetState.cfg      = cfg
+    _targetState.useColor = true
+    pcall(_ApplyTargetOnPlate)
+end
+
+local _healerApplyState = { plate = nil, isFriend = false, cfg = nil }
+local function _ApplyHealerMarkerInner()
+    local plate    = _healerApplyState.plate
+    local isFriend = _healerApplyState.isFriend
+    local cfg      = _healerApplyState.cfg
+    local tex = _GetHealer(plate)
+    if not tex then return end
+    _ApplyMarker(tex, _SafeAnchorFor(plate), cfg)
+    local c = cfg.color
+    if c then
+        tex:SetDesaturated(true)
+        tex:SetVertexColor(c[1] or 1, c[2] or 1, c[3] or 1, c[4] or 1)
+    else
+        tex:SetDesaturated(not isFriend)
+        if isFriend then
             tex:SetVertexColor(1, 1, 1, 1)
+        else
+            tex:SetVertexColor(1, 0.15, 0.15, 1)
         end
-        tex:Show()
-    end)
+    end
+    tex:Show()
 end
 
 local function _ApplyHealerMarkerOnPlate(plate, isFriend, cfg)
     if not plate or not cfg or cfg.enabled ~= "1" then return end
-    pcall(function()
-        local tex = _GetHealer(plate)
-        if not tex then return end
-        _ApplyMarker(tex, _SafeAnchorFor(plate), cfg)
-        local c = cfg.color
-        if c then
-            tex:SetDesaturated(true)
-            tex:SetVertexColor(c[1] or 1, c[2] or 1, c[3] or 1, c[4] or 1)
-        else
-            tex:SetDesaturated(not isFriend)
-            if isFriend then
-                tex:SetVertexColor(1, 1, 1, 1)
-            else
-                tex:SetVertexColor(1, 0.15, 0.15, 1)
-            end
-        end
-        tex:Show()
-    end)
+    _healerApplyState.plate    = plate
+    _healerApplyState.isFriend = isFriend
+    _healerApplyState.cfg      = cfg
+    pcall(_ApplyHealerMarkerInner)
+end
+
+-- Shared state + named body for the two per-plate iterations inside
+-- RefreshHealerCrosses (test-mode stamp + enemy-healer walk).  Passes
+-- I.healerFriendly / I.healerEnemy via upvalue reload each iteration.
+local _healerLoopState = { plate = nil, I = nil, testFriendly = false, testEnemy = false }
+
+local function _HealerTestModeBody()
+    local plate = _healerLoopState.plate
+    local uf = plate and plate.UnitFrame
+    local unit = uf and (uf.unit or uf.displayedUnit)
+    if not unit then return end
+    local isFriend = UnitIsFriend("player", unit)
+    local I = _healerLoopState.I
+    if isFriend and _healerLoopState.testFriendly then
+        _ApplyHealerMarkerOnPlate(plate, true, I.healerFriendly)
+    elseif (not isFriend) and _healerLoopState.testEnemy then
+        _ApplyHealerMarkerOnPlate(plate, false, I.healerEnemy)
+    end
+end
+
+local function _HealerEnemyBody()
+    local plate = _healerLoopState.plate
+    local I     = _healerLoopState.I
+    local uf = plate and plate.UnitFrame
+    local punit = uf and (uf.unit or uf.displayedUnit)
+    local arenaUnit = ns:GetArenaUnitForPlate(plate)
+
+    local isFriend, isPlayer
+    if punit then
+        local ok1, f = pcall(UnitIsFriend, "player", punit)
+        if ok1 then isFriend = f end
+        local ok2, p = pcall(UnitIsPlayer, punit)
+        if ok2 then isPlayer = p end
+    end
+    if arenaUnit then
+        isFriend = false
+        isPlayer = true
+    end
+    if isFriend ~= false then return end
+    if not isPlayer then return end
+
+    if _IsHealerForPlate(plate, punit) then
+        _ApplyHealerMarkerOnPlate(plate, false, I.healerEnemy)
+    end
 end
 
 function ns:RefreshHealerCrosses()
@@ -876,20 +950,15 @@ function ns:RefreshHealerCrosses()
     local I = MyNamePlatesDB.indicators
     pcall(_HideHealerMarkers)
 
+    _healerLoopState.I = I
+
     -- Test mode: stamp every plate
     if ns.testMode and (ns.testMode.healerFriendly or ns.testMode.healerEnemy) then
+        _healerLoopState.testFriendly = ns.testMode.healerFriendly or false
+        _healerLoopState.testEnemy    = ns.testMode.healerEnemy    or false
         for _, plate in ipairs(C_NamePlate.GetNamePlates(true)) do
-            pcall(function()
-                local uf = plate.UnitFrame
-                local unit = uf and (uf.unit or uf.displayedUnit)
-                if not unit then return end
-                local isFriend = UnitIsFriend("player", unit)
-                if isFriend and ns.testMode.healerFriendly then
-                    _ApplyHealerMarkerOnPlate(plate, true, I.healerFriendly)
-                elseif (not isFriend) and ns.testMode.healerEnemy then
-                    _ApplyHealerMarkerOnPlate(plate, false, I.healerEnemy)
-                end
-            end)
+            _healerLoopState.plate = plate
+            pcall(_HealerTestModeBody)
         end
         return
     end
@@ -913,31 +982,8 @@ function ns:RefreshHealerCrosses()
     if I.healerEnemy and I.healerEnemy.enabled == "1"
        and C_NamePlate.GetNamePlates then
         for _, plate in ipairs(C_NamePlate.GetNamePlates(true)) do
-            pcall(function()
-                local uf = plate.UnitFrame
-                local punit = uf and (uf.unit or uf.displayedUnit)
-                local arenaUnit = ns:GetArenaUnitForPlate(plate)
-
-                -- Friend/enemy/player resolution with ArenaMap fallback.
-                local isFriend, isPlayer
-                if punit then
-                    local ok1, f = pcall(UnitIsFriend, "player", punit)
-                    if ok1 then isFriend = f end
-                    local ok2, p = pcall(UnitIsPlayer, punit)
-                    if ok2 then isPlayer = p end
-                end
-                if arenaUnit then
-                    -- Arena enemy: by definition not friend, is player.
-                    isFriend = false
-                    isPlayer = true
-                end
-                if isFriend ~= false then return end
-                if not isPlayer then return end
-
-                if _IsHealerForPlate(plate, punit) then
-                    _ApplyHealerMarkerOnPlate(plate, false, I.healerEnemy)
-                end
-            end)
+            _healerLoopState.plate = plate
+            pcall(_HealerEnemyBody)
         end
     end
 end
@@ -963,6 +1009,96 @@ end
 -- party/world walk didn't include random open-world friendly plates,
 -- so it was hiding markers that UpdateIndicators had just stamped.
 ----------------------------------------------------------------------
+-- 1.34.2: shared state + named bodies for the per-plate iterations
+-- inside RefreshClassIcons.  In arena with forbidden enemy plates,
+-- this was the single biggest closure allocator (~2 closures per
+-- forbidden plate per refresh).  All state passed via _classLoopState.
+local _classLoopState = {
+    plate     = nil,
+    cfg       = nil,
+    classFile = nil,
+    cf        = nil,
+    ce        = nil,
+    cfOn      = false,
+    ceOn      = false,
+    -- Test-mode inputs / outputs.
+    testFriendly = false,
+    testEnemy    = false,
+    ownClass     = nil,
+}
+
+local function _ApplyClassStampInner()
+    local plate     = _classLoopState.plate
+    local cfg       = _classLoopState.cfg
+    local classFile = _classLoopState.classFile
+    local tex = _GetClassIcon(plate)
+    if not tex then return end
+    if not _ApplyClassTex(tex, classFile) then return end
+    _ApplyMarker(tex, _SafeAnchorFor(plate), cfg)
+    tex:SetVertexColor(1, 1, 1, 1)
+    tex:Show()
+end
+
+local function _ClassTestBody()
+    local plate = _classLoopState.plate
+    local uf = plate and plate.UnitFrame
+    local unit = uf and (uf.unit or uf.displayedUnit)
+    local isFriend
+    if unit then
+        local ok, f = pcall(UnitIsFriend, "player", unit)
+        if ok then isFriend = f end
+    end
+    if isFriend == nil and ns:GetArenaUnitForPlate(plate) then
+        isFriend = false
+    end
+    if isFriend == nil then return end
+    local classFile = _GetClassFile(plate, unit) or _classLoopState.ownClass
+    local cfg
+    if isFriend and _classLoopState.testFriendly then
+        cfg = _classLoopState.cf
+    elseif (not isFriend) and _classLoopState.testEnemy then
+        cfg = _classLoopState.ce
+    end
+    if cfg and classFile then
+        _classLoopState.cfg       = cfg
+        _classLoopState.classFile = classFile
+        pcall(_ApplyClassStampInner)
+    end
+end
+
+-- Reused across both the classify + stamp pcalls in the forbidden-plate
+-- branch.  Returned values live on _classLoopState (cfg + classFile);
+-- caller checks those to decide whether to stamp or hide.
+local function _ClassifyForbiddenBody()
+    local plate = _classLoopState.plate
+    local uf    = plate and plate.UnitFrame
+    local unit  = uf and (uf.unit or uf.displayedUnit)
+
+    local isFriend
+    if unit then
+        local ok, f = pcall(UnitIsFriend, "player", unit)
+        if ok then isFriend = f end
+    end
+    if isFriend == nil and ns:GetArenaUnitForPlate(plate) then
+        isFriend = false
+    end
+    if isFriend == nil then
+        _classLoopState.cfg = nil
+        _classLoopState.classFile = nil
+        return
+    end
+    if isFriend and _classLoopState.cfOn then
+        _classLoopState.cfg       = _classLoopState.cf
+        _classLoopState.classFile = _GetClassFile(plate, unit)
+    elseif (not isFriend) and _classLoopState.ceOn then
+        _classLoopState.cfg       = _classLoopState.ce
+        _classLoopState.classFile = _GetClassFile(plate, unit)
+    else
+        _classLoopState.cfg = nil
+        _classLoopState.classFile = nil
+    end
+end
+
 function ns:RefreshClassIcons()
     if not (MyNamePlatesDB and MyNamePlatesDB.indicators) then return end
     if not (C_NamePlate and C_NamePlate.GetNamePlates) then return end
@@ -981,40 +1117,23 @@ function ns:RefreshClassIcons()
         return
     end
 
+    _classLoopState.cf   = cf
+    _classLoopState.ce   = ce
+    _classLoopState.cfOn = cfOn
+    _classLoopState.ceOn = ceOn
+
     -- Test mode: stamp every visible plate so the user can preview the
     -- placement / scale settings.  UpdateIndicators agrees on the same
     -- outcome (it also branches on testMode flags), so there's no
     -- conflict.
     if testOn then
         local _, ownClass = UnitClass("player")
+        _classLoopState.ownClass     = ownClass
+        _classLoopState.testFriendly = testFriendly and true or false
+        _classLoopState.testEnemy    = testEnemy    and true or false
         for _, plate in ipairs(C_NamePlate.GetNamePlates(true)) do
-            local uf = plate.UnitFrame
-            local unit = uf and (uf.unit or uf.displayedUnit)
-            local isFriend
-            if unit then
-                local ok, f = pcall(UnitIsFriend, "player", unit)
-                if ok then isFriend = f end
-            end
-            -- ArenaMap-mapped forbidden plates are by definition enemies.
-            if isFriend == nil and ns:GetArenaUnitForPlate(plate) then
-                isFriend = false
-            end
-            if isFriend ~= nil then
-                local classFile = _GetClassFile(plate, unit) or ownClass
-                local cfg
-                if isFriend and testFriendly then cfg = cf
-                elseif (not isFriend) and testEnemy then cfg = ce end
-                if cfg and classFile then
-                    pcall(function()
-                        local tex = _GetClassIcon(plate)
-                        if not tex then return end
-                        if not _ApplyClassTex(tex, classFile) then return end
-                        _ApplyMarker(tex, _SafeAnchorFor(plate), cfg)
-                        tex:SetVertexColor(1, 1, 1, 1)
-                        tex:Show()
-                    end)
-                end
-            end
+            _classLoopState.plate = plate
+            pcall(_ClassTestBody)
         end
         return
     end
@@ -1027,38 +1146,12 @@ function ns:RefreshClassIcons()
     -- exclusively by UpdateIndicators per-frame.
     for _, plate in ipairs(C_NamePlate.GetNamePlates(true)) do
         if plate.IsForbidden and plate:IsForbidden() then
-            local cfg, classFile
-            pcall(function()
-                local uf = plate.UnitFrame
-                local unit = uf and (uf.unit or uf.displayedUnit)
-
-                -- Resolve friend/enemy: prefer per-plate token, then
-                -- ArenaMap (which means enemy by definition).
-                local isFriend
-                if unit then
-                    local ok, f = pcall(UnitIsFriend, "player", unit)
-                    if ok then isFriend = f end
-                end
-                if isFriend == nil and ns:GetArenaUnitForPlate(plate) then
-                    isFriend = false
-                end
-                if isFriend == nil then return end
-
-                if isFriend and cfOn then
-                    cfg, classFile = cf, _GetClassFile(plate, unit)
-                elseif (not isFriend) and ceOn then
-                    cfg, classFile = ce, _GetClassFile(plate, unit)
-                end
-            end)
+            _classLoopState.plate = plate
+            pcall(_ClassifyForbiddenBody)
+            local cfg       = _classLoopState.cfg
+            local classFile = _classLoopState.classFile
             if cfg and classFile then
-                pcall(function()
-                    local tex = _GetClassIcon(plate)
-                    if not tex then return end
-                    if not _ApplyClassTex(tex, classFile) then return end
-                    _ApplyMarker(tex, _SafeAnchorFor(plate), cfg)
-                    tex:SetVertexColor(1, 1, 1, 1)
-                    tex:Show()
-                end)
+                pcall(_ApplyClassStampInner)
             else
                 local m = plate.MyNP_ClassMarker
                 if m and m:IsShown() then

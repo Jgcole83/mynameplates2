@@ -244,17 +244,26 @@ end
 -- how a user permanently silences a category-classified aura (e.g.
 -- ignore your own Barkskin as noise).
 ----------------------------------------------------------------------
+-- 1.34.2: reuse a single upvalue table instead of allocating a fresh
+-- hash-table (+ ~100 entry writes + hash resizes) on every call.
+-- RefreshAllAuras drives this at 10 Hz once per drain; the previous
+-- allocate-and-populate approach dumped ~10 KB/sec of transient
+-- garbage into the GC.  Callers must not retain the returned table
+-- across a subsequent _MergedList() call.
+local _mergedList = {}
 local function _MergedList()
-    local merged = {}
+    for k in pairs(_mergedList) do
+        _mergedList[k] = nil
+    end
     for id, entry in pairs(ns.AURA_LIST_DEFAULT) do
-        merged[id] = entry
+        _mergedList[id] = entry
     end
     if MyNamePlatesDB and MyNamePlatesDB.auras and MyNamePlatesDB.auras.list then
         for id, entry in pairs(MyNamePlatesDB.auras.list) do
-            merged[id] = entry
+            _mergedList[id] = entry
         end
     end
-    return merged
+    return _mergedList
 end
 
 ----------------------------------------------------------------------
@@ -583,6 +592,22 @@ function ns:UpdateAurasForUnit(unit, updateInfo)
     pcall(_Apply, plate, scanUnit, db, plate.MyNP_ActiveTracked)
 end
 
+-- 1.34.2: shared upvalue state + named pcall body so the per-plate
+-- loop below doesn't allocate a fresh closure on every iteration.
+-- RefreshAllAuras runs at 10 Hz (from Discovery's refresh drainer)
+-- across every visible plate; the previous anonymous-closure version
+-- was allocating ~200 closures/sec of pure garbage in a full arena.
+local _auraApplyState = { plate = nil, db = nil, list = nil }
+local function _RefreshOnePlate()
+    local plate = _auraApplyState.plate
+    if not plate then return end
+    local unit = _ResolveUnitForPlate(plate)
+    if not unit then return end
+    plate.MyNP_AuraLastUnit  = unit
+    plate.MyNP_ActiveTracked = _FullScan(unit, _auraApplyState.db, _auraApplyState.list)
+    _Apply(plate, unit, _auraApplyState.db, plate.MyNP_ActiveTracked)
+end
+
 -- RefreshAllAuras() -- full scan of every visible plate.  Called
 -- when config changes, on PLAYER_ENTERING_WORLD, and from other
 -- refresh triggers.  Also wipes per-plate caches so the next
@@ -592,15 +617,12 @@ function ns:RefreshAllAuras()
     if not (C_NamePlate and C_NamePlate.GetNamePlates) then return end
     local db   = MyNamePlatesDB.auras
     local list = _MergedList()
+    _auraApplyState.db   = db
+    _auraApplyState.list = list
 
     for _, plate in ipairs(C_NamePlate.GetNamePlates(true)) do
-        pcall(function()
-            local unit = _ResolveUnitForPlate(plate)
-            if not unit then return end
-            plate.MyNP_AuraLastUnit  = unit
-            plate.MyNP_ActiveTracked = _FullScan(unit, db, list)
-            _Apply(plate, unit, db, plate.MyNP_ActiveTracked)
-        end)
+        _auraApplyState.plate = plate
+        pcall(_RefreshOnePlate)
     end
 end
 

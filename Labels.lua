@@ -1188,6 +1188,26 @@ local function _PickNameConfig(plate, unit)
     return nil
 end
 
+-- 1.34.2: shared upvalue state + named pcall bodies for the two
+-- hot paths below (_RestoreDefaultName, _RepositionName).  Same
+-- pattern as _labelState below — RefreshAllLabels fires at 10 Hz
+-- and drives _RepositionName once per plate, so anonymous closure
+-- allocations here were among the top remaining garbage sources.
+local _nameApplyState = { uf = nil, cfg = nil, plate = nil }
+
+local function _RestoreDefaultNameInner()
+    local uf = _nameApplyState.uf
+    if not (uf and uf.name) then return end
+    uf.name:ClearAllPoints()
+    local anchor = uf.healthBar or uf
+    uf.name:SetPoint("BOTTOM", anchor, "TOP", 0, 4)
+    uf.name:SetScale(1.0)
+    if uf.name.MyNP_ipa and uf.name.SetIgnoreParentAlpha then
+        pcall(uf.name.SetIgnoreParentAlpha, uf.name, false)
+        uf.name.MyNP_ipa = nil
+    end
+end
+
 -- Restore the name FontString to Blizzard-equivalent defaults.  Only
 -- called when no config applies but we'd previously moved the text
 -- (so toggling Test off, or unticking Enabled, snaps the name back
@@ -1198,21 +1218,54 @@ local function _RestoreDefaultName(plate, uf)
     if _IsForbidden(plate, uf) then return end
     if not uf.name.MyNP_moved then return end
     uf.name.MyNP_repositioning = true
-    pcall(function()
-        uf.name:ClearAllPoints()
-        local anchor = uf.healthBar or uf
-        uf.name:SetPoint("BOTTOM", anchor, "TOP", 0, 4)
-        uf.name:SetScale(1.0)
-        -- Restore native alpha inheritance so the name fades with
-        -- the plate again when our block is no longer driving it.
-        if uf.name.MyNP_ipa and uf.name.SetIgnoreParentAlpha then
-            pcall(uf.name.SetIgnoreParentAlpha, uf.name, false)
-            uf.name.MyNP_ipa = nil
-        end
-    end)
+    _nameApplyState.uf = uf
+    pcall(_RestoreDefaultNameInner)
     uf.name.MyNP_repositioning = false
     uf.name.MyNP_moved      = nil
     uf.name.MyNP_suppressed = nil
+end
+
+local function _RepositionNameInner()
+    local uf   = _nameApplyState.uf
+    local cfg  = _nameApplyState.cfg
+    local plate= _nameApplyState.plate
+    if not (uf and uf.name and cfg) then return end
+    local anchor = uf.healthBar or uf
+    uf.name:ClearAllPoints()
+    uf.name:SetPoint("CENTER", anchor,
+        cfg.anchor or "BOTTOM",
+        tonumber(cfg.xOffset) or 0,
+        tonumber(cfg.yOffset) or -4)
+
+    -- Summon-name override (BBP totem.lua:399 pattern).
+    if plate and ns.GetSummonNameByPlate then
+        local cachedName = ns:GetSummonNameByPlate(plate)
+        if cachedName
+           and not (issecretvalue and issecretvalue(cachedName))
+           and cachedName ~= ""
+           and uf.name.SetText then
+            local cur = uf.name.GetText and uf.name:GetText()
+            local curIsSecret = cur and issecretvalue and issecretvalue(cur)
+            if curIsSecret or cur ~= cachedName then
+                pcall(uf.name.SetText, uf.name, cachedName)
+            end
+        end
+    end
+
+    if (not uf.name.MyNP_ipa) and uf.name.SetIgnoreParentAlpha then
+        pcall(uf.name.SetIgnoreParentAlpha, uf.name, true)
+        uf.name.MyNP_ipa = true
+    end
+
+    uf.name:SetScale(tonumber(cfg.scale) or 1.0)
+
+    local size = tonumber(cfg.fontSize) or 0
+    if size > 0 and uf.name.GetFont and uf.name.SetFont then
+        local font, _, flags = uf.name:GetFont()
+        if font then
+            uf.name:SetFont(font, size, flags or "")
+        end
+    end
 end
 
 local function _RepositionName(plate)
@@ -1326,67 +1379,15 @@ local function _RepositionName(plate)
     --     they would in baseline until they interact once.
     uf.name.MyNP_repositioning = true
     uf.name.MyNP_moved = true
-    pcall(function()
-        local anchor = uf.healthBar or uf
-        uf.name:ClearAllPoints()
-        uf.name:SetPoint("CENTER", anchor,
-            cfg.anchor or "BOTTOM",
-            tonumber(cfg.xOffset) or 0,
-            tonumber(cfg.yOffset) or -4)
-
-        -- Summon-name override (BBP totem.lua:399 pattern).
-        if plate and ns.GetSummonNameByPlate then
-            local cachedName = ns:GetSummonNameByPlate(plate)
-            if cachedName
-               and not (issecretvalue and issecretvalue(cachedName))
-               and cachedName ~= ""
-               and uf.name.SetText then
-                -- Skip the "is text already correct?" optimisation when
-                -- the current text is secret-tagged — comparing a
-                -- secret string against our cachedName would taint.
-                -- Just always-SetText in that case; the cost is one
-                -- redundant SetText per refresh, no taint risk.
-                local cur = uf.name.GetText and uf.name:GetText()
-                local curIsSecret = cur and issecretvalue and issecretvalue(cur)
-                if curIsSecret or cur ~= cachedName then
-                    pcall(uf.name.SetText, uf.name, cachedName)
-                end
-            end
-        end
-
-        -- Decouple the name FontString from its parent's alpha
-        -- animation, mirroring how the Spec FontString does it at
-        -- _GetSpecText.  In retail Midnight, Blizzard's nameplate
-        -- engine drives the parent UnitFrame's alpha to a low value
-        -- (or 0) on non-targeted plates in arenas — that's why
-        -- pet/totem names "disappear when not the target" in arena
-        -- but render fine in the open world (where the engine
-        -- doesn't fade non-targets as aggressively).  Setting
-        -- IgnoreParentAlpha lets the name keep its own full alpha
-        -- regardless of the plate's selection state.  We tag this
-        -- once per plate so we don't keep re-asserting on every
-        -- SetPoint hook fire (cheap, but pointless).
-        if (not uf.name.MyNP_ipa) and uf.name.SetIgnoreParentAlpha then
-            pcall(uf.name.SetIgnoreParentAlpha, uf.name, true)
-            uf.name.MyNP_ipa = true
-        end
-
-        -- Always apply scale (don't gate on != 1.0, otherwise dropping
-        -- back to 1.0 leaves the previous larger scale stuck).
-        uf.name:SetScale(tonumber(cfg.scale) or 1.0)
-
-        -- Optional explicit font-size override.  0 = use Blizzard's
-        -- default size.  We re-read the current font/flags every
-        -- frame so the engine's font-collect at login still wins for
-        -- typeface and outline; we just override the SIZE.
-        local size = tonumber(cfg.fontSize) or 0
-        if size > 0 and uf.name.GetFont and uf.name.SetFont then
-            local font, _, flags = uf.name:GetFont()
-            if font then
-                uf.name:SetFont(font, size, flags or "")
-            end
-        end
-    end)
+    -- 1.34.2: named function + shared upvalue instead of a fresh
+    -- pcall(function()...) closure per plate per refresh.  See the
+    -- _nameApplyState / _RepositionNameInner definitions above for
+    -- full rationale.  Full comments about the SetText / alpha /
+    -- scale / font semantics moved to _RepositionNameInner.
+    _nameApplyState.uf    = uf
+    _nameApplyState.cfg   = cfg
+    _nameApplyState.plate = plate
+    pcall(_RepositionNameInner)
     uf.name.MyNP_repositioning = false
 end
 
@@ -1577,6 +1578,57 @@ end
 ----------------------------------------------------------------------
 
 ----------------------------------------------------------------------
+-- 1.34.2: shared apply-state for the pcall'd per-plate bodies below.
+-- Same pattern as _totemIconApplyState — RefreshAllLabels iterates
+-- every plate on each 10 Hz drain tick, so per-plate anonymous
+-- closures were the top remaining garbage source after 1.34.1.
+-- Reusing a single upvalue table across all plates keeps allocation
+-- at zero.
+--
+-- Only one caller is in-flight at any given time (single-threaded
+-- game loop), and the pcall'd bodies below finish before the next
+-- plate iteration begins, so cross-plate state overwrite is safe.
+----------------------------------------------------------------------
+local _labelState = {
+    plate     = nil,
+    uf        = nil,
+    unit      = nil,
+    anyNameOn = false,
+    specCfg   = nil,
+    isPlayer  = nil,
+    isFriend  = nil,
+}
+
+local function _ApplyNameForPlate()
+    local plate     = _labelState.plate
+    local uf        = _labelState.uf
+    local anyNameOn = _labelState.anyNameOn
+    if anyNameOn then
+        _HookName(plate)
+        _RepositionName(plate)
+    elseif uf and uf.name and uf.name.MyNP_moved then
+        _RepositionName(plate)
+    end
+end
+
+local function _ApplySpecForPlate()
+    local plate    = _labelState.plate
+    local unit     = _labelState.unit
+    local specCfg  = _labelState.specCfg
+    local isPlayer = _labelState.isPlayer
+    local isFriend = _labelState.isFriend
+    local sfs = plate and plate.MyNP_SpecText
+    if specCfg and specCfg.enabled == "1" and isPlayer
+       and ((isFriend and specCfg.applyFriendly)
+            or ((not isFriend) and specCfg.applyEnemy))
+    then
+        _ApplySpec(plate, unit, specCfg)
+    else
+        if sfs then sfs:Hide() end
+    end
+end
+
+----------------------------------------------------------------------
 -- Public refresh
 ----------------------------------------------------------------------
 function ns:RefreshAllLabels()
@@ -1644,16 +1696,17 @@ function ns:RefreshAllLabels()
                 end
 
                 -- NAME — reposition Blizzard's existing uf.name.
-                -- Wrapped in its OWN pcall so any error here can't
-                -- abort the spec block below.
-                pcall(function()
-                    if anyNameOn then
-                        _HookName(plate)
-                        _RepositionName(plate)
-                    elseif uf.name and uf.name.MyNP_moved then
-                        _RepositionName(plate)
-                    end
-                end)
+                -- 1.34.2: uses a named function + shared state upvalue
+                -- instead of an anonymous closure.  The previous
+                -- pcall(function()...) built a fresh closure over
+                -- (plate, uf, anyNameOn) per plate per refresh — at
+                -- 10 Hz × 20 plates that's 200 closures/sec of pure
+                -- garbage.  Named body + reused state buffer = zero
+                -- allocation.
+                _labelState.plate     = plate
+                _labelState.uf        = uf
+                _labelState.anyNameOn = anyNameOn
+                pcall(_ApplyNameForPlate)
 
                 -- TOTEM ICON — BBP-style overlay.  Runs on ALL plates
                 -- (including secret-unit ones with cached summon data)
@@ -1663,18 +1716,14 @@ function ns:RefreshAllLabels()
                 pcall(_ApplyTotemIcon, plate, unit, unitSecret and nil or isFriend)
 
                 -- SPEC — custom overlay.  Only for non-secret units.
+                -- Same shared-state pattern as NAME above.
                 if not unitSecret then
-                    pcall(function()
-                        local sfs = plate.MyNP_SpecText
-                        if specCfg and specCfg.enabled == "1" and isPlayer
-                           and ((isFriend and specCfg.applyFriendly)
-                                or ((not isFriend) and specCfg.applyEnemy))
-                        then
-                            _ApplySpec(plate, unit, specCfg)
-                        else
-                            if sfs then sfs:Hide() end
-                        end
-                    end)
+                    _labelState.plate    = plate
+                    _labelState.unit     = unit
+                    _labelState.specCfg  = specCfg
+                    _labelState.isPlayer = isPlayer
+                    _labelState.isFriend = isFriend
+                    pcall(_ApplySpecForPlate)
                 end
             else
                 -- Non-summon secret plate with no cache — still make
