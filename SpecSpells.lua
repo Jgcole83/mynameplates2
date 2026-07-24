@@ -294,6 +294,14 @@ function ns:GetSpecByCombatLog(playerName)
     return ns.SPEC_BY_NAME[playerName]
 end
 
+-- 1.34.1: cache-size introspection for /mnp mem.
+function ns:CountSpecByCombatLog()
+    if not ns.SPEC_BY_NAME then return 0 end
+    local n = 0
+    for _ in pairs(ns.SPEC_BY_NAME) do n = n + 1 end
+    return n
+end
+
 ----------------------------------------------------------------------
 -- Combat log listener
 --

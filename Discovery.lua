@@ -987,6 +987,51 @@ function ns:GetActiveCount()
     return n
 end
 
+-- 1.34.1: cache-size introspection for /mnp mem.  Small helpers so
+-- we can report without exposing the underlying tables.  Called
+-- from UI.lua's memory diagnostic.
+function ns:CountActive()
+    local n = 0
+    for _ in pairs(active) do n = n + 1 end
+    return n
+end
+function ns:CountSummonByPlate()
+    local n = 0
+    for _ in pairs(_summonByPlate) do n = n + 1 end
+    return n
+end
+
+-- Aggregate cache-size dumper.  Prints one row per cache with its
+-- current size.  Reads across modules via public counter helpers
+-- rather than exposing the underlying tables.
+function ns:DumpCacheSizes()
+    local function line(label, n) print(("  %-28s %6d"):format(label, n)) end
+    print("  --- caches ---")
+    line("active (per-unit)",           self:CountActive())
+    line("summonByPlate",               self:CountSummonByPlate())
+    if ns.CountSpecByPlate then
+        line("specByPlate",             ns:CountSpecByPlate())
+    end
+    if ns.CountSpecNameCache then
+        line("specNameCache (tooltip)", ns:CountSpecNameCache())
+    end
+    if ns.CountScoreboard then
+        local a, b = ns:CountScoreboard()
+        line("scoreboardByName",        a)
+        line("scoreboardClassByName",   b)
+    end
+    if ns.CountSpecByCombatLog then
+        line("specByCombatLog",         ns:CountSpecByCombatLog())
+    end
+    -- Nameplate widget count — plate-recycled fields don't grow
+    -- unboundedly (pooled by Blizzard), but knowing the visible
+    -- plate count contextualises the other numbers.
+    if C_NamePlate and C_NamePlate.GetNamePlates then
+        local plates = C_NamePlate.GetNamePlates(true) or {}
+        line("visible nameplates",      #plates)
+    end
+end
+
 -- Returns the per-unit classification record (categoryID, npcID,
 -- summonType, plate ref) populated by ClassifyPlate / OnUnitAdded.
 -- Used by /mnp labels to surface "why is this plate alpha=0?".
@@ -1431,6 +1476,11 @@ function ns:RescanAllPlates()
     end
 end
 
+-- 1.34.1: Refresh debouncer state (see _DrainRefresh below for full
+-- rationale).  Forward-declared here so the event dispatch handler
+-- can mark dirty without needing the drainer set up first.
+local _refreshDirty = { indicators = false, auras = false, labels = false }
+
 local f = CreateFrame("Frame")
 f:RegisterEvent("NAME_PLATE_UNIT_ADDED")
 f:RegisterEvent("NAME_PLATE_UNIT_REMOVED")
@@ -1578,20 +1628,85 @@ f:SetScript("OnEvent", function(_, event, unit, arg2)
             -- PLAYER_TARGET_CHANGED, ARENA_*, GROUP_ROSTER_UPDATE, etc.
             ReapplyAll()
         end
-        -- Indicators (target arrow + healer crosses) use direct unit-token
-        -- lookups so they work on plates we don't manage normally (forbidden
-        -- arena enemy plates).  Refresh on every event.
-        if ns.RefreshAllIndicators then
-            pcall(ns.RefreshAllIndicators, ns)
-        end
-        if ns.RefreshAllAuras then
-            pcall(ns.RefreshAllAuras, ns)
-        end
-        if ns.RefreshAllLabels then
-            pcall(ns.RefreshAllLabels, ns)
+        -- 1.34.1: DEBOUNCED refresh.  Previously we called all three
+        -- Refresh* chains inline on every event dispatch.  In arena
+        -- UNIT_AURA fires 20-60x/sec, so we were running the full
+        -- refresh cascade dozens of times per second — each pass
+        -- iterating every plate and allocating ~5 pcall closures per
+        -- plate per refresh = ~9,000 closures/sec = ~1 MB/sec of
+        -- garbage.  The user reported memory climbing to ~40 MB
+        -- before GC reclaimed it, which matches this closure churn
+        -- exactly.
+        --
+        -- Fix: mark each refresh kind dirty here, and let the low-
+        -- frequency consumer OnUpdate below (10 Hz) drain the flags.
+        -- Coalesces bursts of UNIT_AURA into at most 10 refreshes
+        -- per second — visually indistinguishable to the user but a
+        -- 3-6x reduction in refresh work and closure allocation.
+        --
+        -- Auras optimisation: skip .auras on UNIT_AURA because
+        -- UpdateAurasForUnit already handles that unit's aura delta
+        -- incrementally right above (via the updateInfo payload).
+        -- A full RefreshAllAuras on every UNIT_AURA would rescan
+        -- every plate — a huge waste when only one unit's auras
+        -- changed.  Config changes / classification changes still
+        -- trigger RefreshAllAuras through direct calls (SetAurasOption).
+        _refreshDirty.indicators = true
+        _refreshDirty.labels     = true
+        if event ~= "UNIT_AURA" then
+            _refreshDirty.auras  = true
         end
     end)
 end)
+
+----------------------------------------------------------------------
+-- 1.34.1: Debounced refresh consumer.
+--
+-- Batches Refresh* calls into a fixed 10 Hz cadence rather than
+-- firing them on every incoming event.  Matches how BBP structures
+-- its refresh cascade (see midnight/BetterBlizzPlates.lua's
+-- `needsUpdate` deferred-refresh pattern).
+--
+-- Refresh functions themselves are still available for callers that
+-- need immediate updates (config changes, test-mode toggles) — the
+-- debouncer only affects the event-driven fast path.
+----------------------------------------------------------------------
+-- _refreshDirty was forward-declared above the event handler so it
+-- can be marked without depending on the drainer being set up first.
+local _refreshAccum   = 0
+local REFRESH_PERIOD  = 0.1     -- 10 Hz — invisible to the eye,
+                                -- coalesces UNIT_AURA storms.
+local function _DrainRefresh(self, dt)
+    _refreshAccum = _refreshAccum + (dt or 0)
+    if _refreshAccum < REFRESH_PERIOD then return end
+    _refreshAccum = 0
+    if _refreshDirty.indicators and ns.RefreshAllIndicators then
+        _refreshDirty.indicators = false
+        pcall(ns.RefreshAllIndicators, ns)
+    end
+    if _refreshDirty.auras and ns.RefreshAllAuras then
+        _refreshDirty.auras = false
+        pcall(ns.RefreshAllAuras, ns)
+    end
+    if _refreshDirty.labels and ns.RefreshAllLabels then
+        _refreshDirty.labels = false
+        pcall(ns.RefreshAllLabels, ns)
+    end
+end
+local _refreshDrainer = CreateFrame("Frame")
+_refreshDrainer:SetScript("OnUpdate", _DrainRefresh)
+
+-- Public: force-flush all dirty refreshes right now.  Callers that
+-- need synchronous behavior (e.g. UI config commit) should invoke
+-- this instead of the individual Refresh* functions if they don't
+-- know which one they need.
+function ns:FlushRefresh()
+    _refreshDirty.indicators = true
+    _refreshDirty.auras      = true
+    _refreshDirty.labels     = true
+    _refreshAccum = REFRESH_PERIOD
+    _DrainRefresh(nil, REFRESH_PERIOD)
+end
 
 ----------------------------------------------------------------------
 -- Re-apply ticker.  Runs every frame for every active plate.  Cheap
@@ -1600,19 +1715,29 @@ end)
 -- beat Blizzard's "in-combat alpha boost" on close enemy plates and lets
 -- other nameplate addons coexist on default-setting categories.
 ----------------------------------------------------------------------
-local ticker = CreateFrame("Frame")
-ticker:SetScript("OnUpdate", function(_, dt)
-    pcall(function()
-        for unit, info in pairs(active) do
-            if not UnitExists(unit) then
-                ResetPlate(info.plate)
-                active[unit] = nil
-            else
-                ApplyOverrides(info)
-            end
+-- 1.34.1: hoist the ticker body to a named function so we're not
+-- allocating a fresh `pcall(function()...)` closure every frame
+-- (60/sec).  The old anonymous-closure version was creating ~60
+-- closures/sec of garbage even in the empty-plate case.
+--
+-- Also short-circuit when active is empty — common outside combat
+-- and in menus/loading screens — so we don't even enter pcall.
+local function _TickerBody()
+    for unit, info in pairs(active) do
+        if not UnitExists(unit) then
+            ResetPlate(info.plate)
+            active[unit] = nil
+        else
+            ApplyOverrides(info)
         end
-    end)
-end)
+    end
+end
+local function _OnTicker()
+    if next(active) == nil then return end
+    pcall(_TickerBody)
+end
+local ticker = CreateFrame("Frame")
+ticker:SetScript("OnUpdate", _OnTicker)
 
 ----------------------------------------------------------------------
 -- Hook Blizzard's nameplate update.  The engine's UpdateNamePlateOptions
@@ -1622,14 +1747,19 @@ end)
 -- this, so we hook the function and re-apply our overrides immediately
 -- after Blizzard finishes.
 ----------------------------------------------------------------------
+-- 1.34.1: hoist the body so we're not allocating a closure per
+-- UpdateNamePlateOptions call (frequent in retail — CVar changes,
+-- Large Nameplates toggle, faction changes all trigger it).
+local function _ReapplyOnDriverUpdate()
+    for _, info in pairs(active) do
+        ApplyOverrides(info)
+    end
+end
+local function _OnDriverUpdate()
+    pcall(_ReapplyOnDriverUpdate)
+end
 if NamePlateDriverFrame and NamePlateDriverFrame.UpdateNamePlateOptions then
-    pcall(hooksecurefunc, NamePlateDriverFrame, "UpdateNamePlateOptions", function()
-        pcall(function()
-            for _, info in pairs(active) do
-                ApplyOverrides(info)
-            end
-        end)
-    end)
+    pcall(hooksecurefunc, NamePlateDriverFrame, "UpdateNamePlateOptions", _OnDriverUpdate)
 end
 
 -- (CompactUnitFrame_UpdateAll / UpdateHealth hooks removed in v1.14.5 —

@@ -106,21 +106,29 @@ local TOTEM_COLOR_PSYFIEND = { 0.49, 0.00, 1.00 }   -- purple
 -- survive Midnight 12.x anonymisation on nameplate unit tokens.
 -- UnitCastingInfo / UnitChannelInfo / C_UnitAuras.GetUnitAuras are
 -- proven safe on secret nameplate tokens per BBP's shipping code.
--- Returns { icon, color } — never nil (fallback is generic totem).
+--
+-- 1.34.1: returns multiple values (icon, r, g, b) instead of a fresh
+-- table per call.  RefreshAllLabels fires ~10 Hz per event and
+-- iterates every plate; the previous table-per-call allocation was
+-- ~20 fresh 3-4-field tables per second (~4 KB/sec of garbage) in
+-- a mid-sized arena.  Multi-return has zero heap cost.
 local function _ClassifyTotem(unit)
     if not unit then
-        return { icon = TOTEM_ICON_GENERIC, color = TOTEM_COLOR_GENERIC }
+        return TOTEM_ICON_GENERIC,
+               TOTEM_COLOR_GENERIC[1], TOTEM_COLOR_GENERIC[2], TOTEM_COLOR_GENERIC[3]
     end
     -- Wrap every Unit* call in pcall — on rare edge cases (unit token
     -- flips secret mid-frame) these can throw and we don't want the
     -- whole label pipeline to fault.
     local ok, casting = pcall(UnitCastingInfo, unit)
     if ok and casting then
-        return { icon = TOTEM_ICON_CAP, color = TOTEM_COLOR_CAP, isImportant = true }
+        return TOTEM_ICON_CAP,
+               TOTEM_COLOR_CAP[1], TOTEM_COLOR_CAP[2], TOTEM_COLOR_CAP[3]
     end
     local ok2, channeling = pcall(UnitChannelInfo, unit)
     if ok2 and channeling then
-        return { icon = TOTEM_ICON_PSYFIEND, color = TOTEM_COLOR_PSYFIEND, isImportant = true }
+        return TOTEM_ICON_PSYFIEND,
+               TOTEM_COLOR_PSYFIEND[1], TOTEM_COLOR_PSYFIEND[2], TOTEM_COLOR_PSYFIEND[3]
     end
     if C_UnitAuras and C_UnitAuras.GetUnitAuras then
         local ok3, auras = pcall(C_UnitAuras.GetUnitAuras, unit, "HELPFUL")
@@ -132,15 +140,17 @@ local function _ClassifyTotem(unit)
                     local ok4, v = pcall(C_Spell.IsSpellImportant, a.spellId)
                     if ok4 and v then imp = true end
                 end
-                return {
-                    icon = a.icon,
-                    color = imp and TOTEM_COLOR_IMPORTANT or TOTEM_COLOR_GENERIC,
-                    isImportant = imp,
-                }
+                if imp then
+                    return a.icon,
+                           TOTEM_COLOR_IMPORTANT[1], TOTEM_COLOR_IMPORTANT[2], TOTEM_COLOR_IMPORTANT[3]
+                end
+                return a.icon,
+                       TOTEM_COLOR_GENERIC[1], TOTEM_COLOR_GENERIC[2], TOTEM_COLOR_GENERIC[3]
             end
         end
     end
-    return { icon = TOTEM_ICON_GENERIC, color = TOTEM_COLOR_GENERIC }
+    return TOTEM_ICON_GENERIC,
+           TOTEM_COLOR_GENERIC[1], TOTEM_COLOR_GENERIC[2], TOTEM_COLOR_GENERIC[3]
 end
 
 -- Lazy per-plate icon widget.  Same forbidden-check pattern as
@@ -197,6 +207,33 @@ local function _TotemIconType(plate, unit)
     return st or "totem"   -- unknown-type summons default to "totem" for gating
 end
 
+-- 1.34.1: shared apply-state upvalue for the pcall'd inner body.
+-- We reuse a single table across every _ApplyTotemIcon call rather
+-- than creating a closure over locals — closures allocate on every
+-- call, the reused table does not.  Only one _ApplyTotemIcon call
+-- is in flight at any given time (the outer refresh loop is single-
+-- threaded), so a shared state buffer is safe.
+local _totemIconApplyState = { frame = nil, uf = nil, cfg = nil,
+                               icon = nil, r = 0, g = 0, b = 0 }
+local function _ApplyTotemIconInner()
+    local s = _totemIconApplyState
+    local frame, uf, cfg = s.frame, s.uf, s.cfg
+    if not (frame and uf and cfg) then return end
+    local size = tonumber(cfg.iconSize) or 26
+    frame:SetSize(size, size)
+    frame:ClearAllPoints()
+    local anchor = uf.healthBar or uf
+    frame:SetPoint("CENTER", anchor,
+        cfg.iconAnchor or "TOP",
+        tonumber(cfg.iconXOffset) or 0,
+        tonumber(cfg.iconYOffset) or 22)
+    if frame.tex then
+        frame.tex:SetTexture(s.icon or TOTEM_ICON_GENERIC)
+        frame.tex:SetVertexColor(s.r, s.g, s.b, 1)
+    end
+    frame:Show()
+end
+
 -- Apply / update / hide the icon overlay for a plate.  Idempotent and
 -- pcall-wrapped so it can't destabilise the outer refresh loop.
 local function _ApplyTotemIcon(plate, unit, isFriend)
@@ -239,32 +276,29 @@ local function _ApplyTotemIcon(plate, unit, isFriend)
     -- on a secret string can taint us) — render the generic totem icon
     -- and colour without probing the unit.  BBP does effectively the
     -- same when their heuristics come up empty.
-    local look
+    local icon, r, g, b
     if issecretvalue and issecretvalue(unit) then
-        look = { icon = TOTEM_ICON_GENERIC, color = TOTEM_COLOR_GENERIC }
+        icon = TOTEM_ICON_GENERIC
+        r, g, b = TOTEM_COLOR_GENERIC[1], TOTEM_COLOR_GENERIC[2], TOTEM_COLOR_GENERIC[3]
     else
-        look = _ClassifyTotem(unit)
+        icon, r, g, b = _ClassifyTotem(unit)
     end
 
     local frame = _GetTotemIcon(plate)
     if not frame then return end   -- forbidden UF
 
-    pcall(function()
-        local size = tonumber(cfg.iconSize) or 26
-        frame:SetSize(size, size)
-        frame:ClearAllPoints()
-        local anchor = uf.healthBar or uf
-        frame:SetPoint("CENTER", anchor,
-            cfg.iconAnchor or "TOP",
-            tonumber(cfg.iconXOffset) or 0,
-            tonumber(cfg.iconYOffset) or 22)
-        if frame.tex then
-            frame.tex:SetTexture(look.icon or TOTEM_ICON_GENERIC)
-            local c = look.color or TOTEM_COLOR_GENERIC
-            frame.tex:SetVertexColor(c[1], c[2], c[3], 1)
-        end
-        frame:Show()
-    end)
+    -- 1.34.1: apply via a pre-declared upvalue instead of a fresh
+    -- pcall(function()...) closure per call.  RefreshAllLabels calls
+    -- this per plate every 10 Hz — the previous closure was ~1 KB/sec
+    -- of pure garbage in a full arena.
+    _totemIconApplyState.frame  = frame
+    _totemIconApplyState.uf     = uf
+    _totemIconApplyState.cfg    = cfg
+    _totemIconApplyState.icon   = icon
+    _totemIconApplyState.r      = r
+    _totemIconApplyState.g      = g
+    _totemIconApplyState.b      = b
+    pcall(_ApplyTotemIconInner)
 end
 
 -- Public: clear the icon on a plate (called from Discovery.lua on
@@ -689,6 +723,24 @@ local _specByPlate = {}
 
 function ns:GetSpecByPlate(plate)
     return plate and _specByPlate[plate] or nil
+end
+
+-- 1.34.1: cache-size introspection for /mnp mem.
+function ns:CountSpecByPlate()
+    local n = 0
+    for _ in pairs(_specByPlate) do n = n + 1 end
+    return n
+end
+function ns:CountSpecNameCache()
+    local n = 0
+    for _ in pairs(specNameCache) do n = n + 1 end
+    return n
+end
+function ns:CountScoreboard()
+    local a, b = 0, 0
+    for _ in pairs(_scoreboardByName) do a = a + 1 end
+    for _ in pairs(_scoreboardClassByName) do b = b + 1 end
+    return a, b
 end
 
 function ns:SetSpecByPlate(plate, specName)

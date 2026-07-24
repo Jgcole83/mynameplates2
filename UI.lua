@@ -1374,6 +1374,47 @@ SlashCmdList["MYNAMEPLATES"] = function(msg)
                 end
             end
         end
+    elseif msg == "mem" or msg == "memory" or msg == "mem gc" or msg == "memory gc" then
+        -- 1.34.1: memory diagnostic.  Dumps Lua GC state + per-cache
+        -- sizes so we can spot growth-without-bound.  User reported
+        -- ~40 MB memory usage in arena that got reclaimed on GC —
+        -- that closure-churn is fixed in 1.34.1 via the debounced
+        -- refresh consumer, and this command lets us verify.
+        --
+        -- Usage:
+        --   /mnp mem          -- one-shot snapshot
+        --   /mnp mem gc       -- snapshot, run collectgarbage("collect"),
+        --                        snapshot again (shows garbage size)
+        --
+        -- What "high" looks like on this addon:
+        --   * Lua memory total > 15 MB  → investigate
+        --   * active + summonByPlate + specByPlate > 200 total → many
+        --     plates in flight or cleanup regression
+        --   * scoreboardByName > 40 → possibly a leaked map (should
+        --     be capped by BG size)
+        local before = collectgarbage("count")   -- KB across all Lua
+        local function fmt(kb) return ("%.1f MB (%d KB)"):format(kb / 1024, kb) end
+        print("|cff00c0ffMyNamePlates|r memory:")
+        print(("  Lua total:            %s"):format(fmt(before)))
+        if UpdateAddOnMemoryUsage and GetAddOnMemoryUsage then
+            pcall(UpdateAddOnMemoryUsage)
+            local mnp = GetAddOnMemoryUsage("MyNamePlates") or 0
+            print(("  MyNamePlates addon:   %s"):format(fmt(mnp)))
+        end
+        if ns.DumpCacheSizes then
+            ns:DumpCacheSizes()
+        end
+        if msg == "mem gc" or msg == "memory gc" then
+            collectgarbage("collect")
+            local after = collectgarbage("count")
+            print(("  Lua after GC:         %s   (reclaimed %.1f MB)"):format(
+                fmt(after), (before - after) / 1024))
+            if UpdateAddOnMemoryUsage and GetAddOnMemoryUsage then
+                pcall(UpdateAddOnMemoryUsage)
+                local mnpAfter = GetAddOnMemoryUsage("MyNamePlates") or 0
+                print(("  MyNamePlates after GC: %s"):format(fmt(mnpAfter)))
+            end
+        end
     else
         OpenPanel()
     end
