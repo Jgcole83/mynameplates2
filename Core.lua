@@ -75,6 +75,30 @@ local function BuildDefaults()
                 fontSize       = 0,
                 applyFriendly  = true,
                 applyEnemy     = true,
+                -- Icon overlay (BBP-style fallback for retail Midnight 12.x
+                -- arena).  In arena, Blizzard anonymises enemy totem unit
+                -- tokens (uf.unit / UnitGUID / UnitName all return secret
+                -- strings), so the name overlay above can't render totem
+                -- names until the player targets or mouseovers the totem.
+                -- BBP's midnight/modules/totem.lua sidesteps this by
+                -- rendering a texture + color instead of the totem name —
+                -- confirmed via their CHANGELOG (2.0.4: "Totem Indicator
+                -- is kind of back... Best that can be done atm.").
+                --
+                -- We adopt the same pattern: a small icon at a configurable
+                -- offset that renders whenever the plate qualifies as a
+                -- summon.  Icon selection heuristic (from BBP):
+                --   * UnitCastingInfo → Capacitor Totem  (orange)
+                --   * UnitChannelInfo → Psyfiend          (purple)
+                --   * First HELPFUL aura + IsSpellImportant → aura icon
+                --     (magenta if important, brown otherwise)
+                --   * Otherwise → generic totem-recall icon (brown)
+                -- Defaults ON — the whole point is arena visibility.
+                showIcon       = true,
+                iconSize       = 26,
+                iconAnchor     = "TOP",
+                iconXOffset    = 0,
+                iconYOffset    = 22,
                 types = {
                     totem       = true,
                     psyfiend    = true,

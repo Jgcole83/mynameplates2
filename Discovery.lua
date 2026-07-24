@@ -1550,6 +1550,15 @@ f:SetScript("OnEvent", function(_, event, unit, arg2)
                 elseif plate.MyNP_AuraIcon then
                     pcall(plate.MyNP_AuraIcon.Hide, plate.MyNP_AuraIcon)
                 end
+                -- 1.34.0: hide the BBP-style totem icon so a recycled
+                -- plate re-bound to a non-summon doesn't show a stale
+                -- totem overlay.  Cheap early-out when the widget was
+                -- never created for this plate.
+                if ns.ClearTotemIconForPlate then
+                    pcall(ns.ClearTotemIconForPlate, ns, plate)
+                elseif plate.MyNP_TotemIcon then
+                    pcall(plate.MyNP_TotemIcon.Hide, plate.MyNP_TotemIcon)
+                end
             end)
         elseif event == "UNIT_AURA" or event == "UNIT_THREAT_LIST_UPDATE" or event == "UNIT_FACTION" then
             if unit and active[unit] then

@@ -66,6 +66,217 @@ local function _IsForbidden(plate, uf)
 end
 
 ----------------------------------------------------------------------
+-- Totem icon overlay (BBP-style; retail Midnight 12.x arena fallback).
+--
+-- Mirrors BBP midnight/modules/totem.lua's rendering strategy: a small
+-- icon + color at a configurable position on any plate classified as a
+-- summon.  Runs alongside the petTotemName TEXT overlay above — text
+-- works where UnitName is resolvable (world / BG / after target-capture),
+-- icon works everywhere including anonymised arena enemy plates where
+-- the name path is fundamentally blocked by Blizzard's anonymisation
+-- (see BBP CHANGELOG 2.0.4: "Best that can be done atm.").
+--
+-- Detection heuristic (BBP pattern):
+--   1. UnitCastingInfo(unit)      → Capacitor Totem  (orange, cap icon)
+--   2. UnitChannelInfo(unit)      → Psyfiend         (purple, psy icon)
+--   3. First HELPFUL aura +
+--      C_Spell.IsSpellImportant   → aura icon        (magenta if important
+--                                                     else brown)
+--   4. otherwise                  → generic totem    (brown)
+--
+-- Membership is decided by ns:IsSummonPlate / _summonByPlate cache +
+-- the petTotemName per-type filter — same gating as the text overlay,
+-- so friendly/enemy + per-type checkboxes on the UI apply uniformly.
+----------------------------------------------------------------------
+local TOTEM_ICON_GENERIC   = "Interface\\Icons\\Spell_shaman_totemrecall"
+local TOTEM_ICON_IMPORTANT = "Interface\\Icons\\Spell_Nature_Groundingtotem"
+local TOTEM_ICON_CAP       = C_Spell and C_Spell.GetSpellTexture
+                             and C_Spell.GetSpellTexture(192058)
+                             or "Interface\\Icons\\Spell_Nature_Skinofearth"
+local TOTEM_ICON_PSYFIEND  = C_Spell and C_Spell.GetSpellTexture
+                             and C_Spell.GetSpellTexture(199824)
+                             or "Interface\\Icons\\Ability_Priest_Psyfiend"
+
+local TOTEM_COLOR_GENERIC  = { 0.40, 0.34, 0.21 }   -- neutral brown
+local TOTEM_COLOR_IMPORTANT= { 1.00, 0.00, 1.00 }   -- magenta (Grounding-class)
+local TOTEM_COLOR_CAP      = { 1.00, 0.69, 0.00 }   -- orange
+local TOTEM_COLOR_PSYFIEND = { 0.49, 0.00, 1.00 }   -- purple
+
+-- Classify a totem-plate's visual treatment using ONLY APIs that
+-- survive Midnight 12.x anonymisation on nameplate unit tokens.
+-- UnitCastingInfo / UnitChannelInfo / C_UnitAuras.GetUnitAuras are
+-- proven safe on secret nameplate tokens per BBP's shipping code.
+-- Returns { icon, color } — never nil (fallback is generic totem).
+local function _ClassifyTotem(unit)
+    if not unit then
+        return { icon = TOTEM_ICON_GENERIC, color = TOTEM_COLOR_GENERIC }
+    end
+    -- Wrap every Unit* call in pcall — on rare edge cases (unit token
+    -- flips secret mid-frame) these can throw and we don't want the
+    -- whole label pipeline to fault.
+    local ok, casting = pcall(UnitCastingInfo, unit)
+    if ok and casting then
+        return { icon = TOTEM_ICON_CAP, color = TOTEM_COLOR_CAP, isImportant = true }
+    end
+    local ok2, channeling = pcall(UnitChannelInfo, unit)
+    if ok2 and channeling then
+        return { icon = TOTEM_ICON_PSYFIEND, color = TOTEM_COLOR_PSYFIEND, isImportant = true }
+    end
+    if C_UnitAuras and C_UnitAuras.GetUnitAuras then
+        local ok3, auras = pcall(C_UnitAuras.GetUnitAuras, unit, "HELPFUL")
+        if ok3 and type(auras) == "table" and auras[1] then
+            local a = auras[1]
+            if a and a.icon then
+                local imp = false
+                if C_Spell and C_Spell.IsSpellImportant and a.spellId then
+                    local ok4, v = pcall(C_Spell.IsSpellImportant, a.spellId)
+                    if ok4 and v then imp = true end
+                end
+                return {
+                    icon = a.icon,
+                    color = imp and TOTEM_COLOR_IMPORTANT or TOTEM_COLOR_GENERIC,
+                    isImportant = imp,
+                }
+            end
+        end
+    end
+    return { icon = TOTEM_ICON_GENERIC, color = TOTEM_COLOR_GENERIC }
+end
+
+-- Lazy per-plate icon widget.  Same forbidden-check pattern as
+-- _GetSpecText / _GetIcon (Auras.lua) — parenting a texture on a
+-- forbidden UnitFrame propagates addon taint, so we bail on those
+-- plates rather than render the icon (matches BBP's own defensive
+-- posture on forbidden arena frames).
+local function _GetTotemIcon(plate)
+    if plate.MyNP_TotemIcon then return plate.MyNP_TotemIcon end
+    local uf = plate.UnitFrame
+    if not uf then return nil end
+    if _IsForbidden(plate, uf) then return nil end
+
+    local frame = CreateFrame("Frame", nil, uf)
+    frame:SetFrameStrata("HIGH")
+    frame:Hide()
+
+    local tex = frame:CreateTexture(nil, "OVERLAY")
+    tex:SetAllPoints(frame)
+    tex:SetTexCoord(0.08, 0.92, 0.08, 0.92)   -- trim default icon border
+    frame.tex = tex
+
+    -- Decouple from parent alpha so the icon stays crisp on faded
+    -- non-target arena plates.  Same trick as the Spec FontString —
+    -- the engine drives the plate alpha aggressively in arena and
+    -- without this the icon would fade with the plate.
+    if frame.SetIgnoreParentAlpha then
+        pcall(frame.SetIgnoreParentAlpha, frame, true)
+    end
+
+    plate.MyNP_TotemIcon = frame
+    return frame
+end
+
+-- Decide whether this plate is a candidate for the totem icon.  Uses
+-- the same summon-classification pipeline as _PickNameConfig — so the
+-- icon and the text overlay travel together.  Returns nil (no icon)
+-- OR the effective summonType so callers can honour the per-type
+-- filter without re-deriving it.
+local function _TotemIconType(plate, unit)
+    if not (plate and unit) then return nil end
+    -- Test-mode: force ON for tuning.
+    if ns.testMode and ns.testMode.petTotemName then
+        return "totem"
+    end
+    local isSummon = ns.IsSummonPlate and ns:IsSummonPlate(plate, unit)
+    if not isSummon then return nil end
+    -- Prefer the per-plate captured type (accurate even on secret units).
+    local st = ns.GetSummonTypeByPlate and ns:GetSummonTypeByPlate(plate)
+    if not st then
+        local info = ns.GetSummonInfoForUnit and ns:GetSummonInfoForUnit(unit)
+        st = info and info.summonType
+    end
+    return st or "totem"   -- unknown-type summons default to "totem" for gating
+end
+
+-- Apply / update / hide the icon overlay for a plate.  Idempotent and
+-- pcall-wrapped so it can't destabilise the outer refresh loop.
+local function _ApplyTotemIcon(plate, unit, isFriend)
+    if not plate then return end
+    local uf = plate.UnitFrame
+    if not uf then return end
+    if _IsForbidden(plate, uf) then return end
+
+    local L   = MyNamePlatesDB and MyNamePlatesDB.labels
+    local cfg = L and L.petTotemName
+    local existing = plate.MyNP_TotemIcon
+    local function hide()
+        if existing then existing:Hide() end
+    end
+
+    if not (cfg and cfg.enabled == "1" and cfg.showIcon) then
+        return hide()
+    end
+
+    -- Per-summon-type filter — same table used by the name overlay.
+    local st = _TotemIconType(plate, unit)
+    if not st then return hide() end
+    if cfg.types and cfg.types[st] == false then return hide() end
+
+    -- Friend / enemy gate.  Reuse the resolved isFriend from caller —
+    -- caller already handled secret-unit safety when deriving it.
+    if isFriend == nil then
+        if issecretvalue and issecretvalue(unit) then
+            local cf = ns.GetSummonFriendByPlate and ns:GetSummonFriendByPlate(plate)
+            isFriend = cf == true
+        else
+            local ok, f = pcall(UnitIsFriend, "player", unit)
+            isFriend = ok and f or false
+        end
+    end
+    if isFriend and not cfg.applyFriendly then return hide() end
+    if (not isFriend) and not cfg.applyEnemy then return hide() end
+
+    -- Skip the classifier entirely on secret unit tokens (Unit*Info calls
+    -- on a secret string can taint us) — render the generic totem icon
+    -- and colour without probing the unit.  BBP does effectively the
+    -- same when their heuristics come up empty.
+    local look
+    if issecretvalue and issecretvalue(unit) then
+        look = { icon = TOTEM_ICON_GENERIC, color = TOTEM_COLOR_GENERIC }
+    else
+        look = _ClassifyTotem(unit)
+    end
+
+    local frame = _GetTotemIcon(plate)
+    if not frame then return end   -- forbidden UF
+
+    pcall(function()
+        local size = tonumber(cfg.iconSize) or 26
+        frame:SetSize(size, size)
+        frame:ClearAllPoints()
+        local anchor = uf.healthBar or uf
+        frame:SetPoint("CENTER", anchor,
+            cfg.iconAnchor or "TOP",
+            tonumber(cfg.iconXOffset) or 0,
+            tonumber(cfg.iconYOffset) or 22)
+        if frame.tex then
+            frame.tex:SetTexture(look.icon or TOTEM_ICON_GENERIC)
+            local c = look.color or TOTEM_COLOR_GENERIC
+            frame.tex:SetVertexColor(c[1], c[2], c[3], 1)
+        end
+        frame:Show()
+    end)
+end
+
+-- Public: clear the icon on a plate (called from Discovery.lua on
+-- NAME_PLATE_UNIT_REMOVED so recycled plate frames don't inherit the
+-- previous unit's icon).
+function ns:ClearTotemIconForPlate(plate)
+    if plate and plate.MyNP_TotemIcon then
+        pcall(plate.MyNP_TotemIcon.Hide, plate.MyNP_TotemIcon)
+    end
+end
+
+----------------------------------------------------------------------
 -- Custom spec FontString (one per plate, lazy)
 ----------------------------------------------------------------------
 local function _GetSpecText(plate)
@@ -1351,8 +1562,15 @@ function ns:RefreshAllLabels()
             -- outer `if unit and not secret` guard skipped the
             -- whole plate, so target-capture correctly stashed the
             -- totem name but the label pipeline never applied it.
-            local hasSummonCache = plate and ns.GetSummonNameByPlate
-                                   and ns:GetSummonNameByPlate(plate) ~= nil
+            --
+            -- 1.34.0: broadened from `.name` presence to ANY cache
+            -- entry (via GetSummonTypeByPlate).  The totem-icon
+            -- overlay renders on secret-unit summon plates even when
+            -- we haven't captured a usable name (e.g. UnitName on
+            -- the target/mouseover token was itself secret), so the
+            -- gate must let those plates through.
+            local hasSummonCache = plate and ns.GetSummonTypeByPlate
+                                   and ns:GetSummonTypeByPlate(plate) ~= nil
 
             if (not unitSecret) or hasSummonCache then
                 -- SPEC block needs friend/enemy/player resolution.
@@ -1385,6 +1603,13 @@ function ns:RefreshAllLabels()
                     end
                 end)
 
+                -- TOTEM ICON — BBP-style overlay.  Runs on ALL plates
+                -- (including secret-unit ones with cached summon data)
+                -- because IsSummonPlate consults the per-plate cache
+                -- populated by target/mouseover capture.  Own pcall so
+                -- a fault here can't wipe the spec render below.
+                pcall(_ApplyTotemIcon, plate, unit, unitSecret and nil or isFriend)
+
                 -- SPEC — custom overlay.  Only for non-secret units.
                 if not unitSecret then
                     pcall(function()
@@ -1398,6 +1623,14 @@ function ns:RefreshAllLabels()
                             if sfs then sfs:Hide() end
                         end
                     end)
+                end
+            else
+                -- Non-summon secret plate with no cache — still make
+                -- sure any previously-rendered totem icon on this
+                -- recycled plate frame is hidden.  Cheap early-out
+                -- when the icon widget doesn't exist yet.
+                if plate.MyNP_TotemIcon then
+                    pcall(plate.MyNP_TotemIcon.Hide, plate.MyNP_TotemIcon)
                 end
             end
         end

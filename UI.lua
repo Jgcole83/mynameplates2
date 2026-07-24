@@ -1044,6 +1044,82 @@ local function BuildLabelBlock(parent, startY, key, headingLabel, defaultY)
         end
         local rows = math.ceil(#TYPE_ROWS / 2)
         y = startY - (rows * ROW) - 6
+
+        -- ---------------------------------------------------------
+        -- 1.34.0: Icon overlay (arena fallback).
+        --
+        -- In retail Midnight 12.x arena, Blizzard anonymises every
+        -- name-bearing field on enemy summon plates (UnitName /
+        -- UnitGUID / uf.name:GetText() all return secret strings),
+        -- so the text overlay above can't render totem names until
+        -- the player targets or mouseovers the totem.
+        --
+        -- BBP's midnight/modules/totem.lua sidesteps this with a
+        -- texture + color instead of the totem name (confirmed via
+        -- their CHANGELOG 2.0.4: "Best that can be done atm.").
+        -- We adopt the same pattern here as a fallback layer — the
+        -- icon renders whenever the plate qualifies as a summon,
+        -- regardless of whether we can resolve the name.
+        --
+        -- Detection heuristic (from BBP):
+        --   * UnitCastingInfo → Capacitor Totem  (orange)
+        --   * UnitChannelInfo → Psyfiend         (purple)
+        --   * First HELPFUL + IsSpellImportant  → magenta
+        --   * otherwise                          → generic brown
+        -- ---------------------------------------------------------
+        local iconHeading = MakeLabel(parent,
+            "Icon overlay (arena fallback):",
+            { 1.0, 0.85, 0.3 })
+        iconHeading:SetPoint("TOPLEFT", 8, y - 4)
+        y = y - ROW
+
+        local iconNote = MakeLabel(parent,
+            "In retail arena, Blizzard hides totem names — icon shows instead.",
+            { 0.75, 0.75, 0.75 })
+        iconNote:SetPoint("TOPLEFT", 8, y - 4)
+        y = y - ROW
+
+        local iconCB = MakeCheckbox(parent, "Show icon",
+            function() local c = ns:GetLabelsConfig(key); return c and c.showIcon end,
+            function(on) ns:SetLabelOption(key, "showIcon", on and true or false) end,
+            "Render a small totem icon on summon plates.  Uses BBP's heuristic (Capacitor / Psyfiend / important-aura / generic).  Enables the name text (above) and the icon to work together — text where available, icon everywhere else.")
+        iconCB:SetPoint("TOPLEFT", 8, y)
+        y = y - ROW
+
+        local ICON_SIZE_SLIDER = { key = "iconSize", label = "Icon Size",
+            tooltip = "Icon dimensions in pixels.  26 matches BBP's default.",
+            min = 12, max = 64, step = 1, default = 26 }
+        local iconSizeSlider = MakeSlider(parent, ICON_SIZE_SLIDER,
+            function() local c = ns:GetLabelsConfig(key); return c and (c.iconSize or 26) or 26 end,
+            function(v) ns:SetLabelOption(key, "iconSize", v) end)
+        iconSizeSlider:SetPoint("TOPLEFT", 8, y - 14)
+        y = y - 44
+
+        local iconAnchorLbl = MakeLabel(parent, "Icon Anchor:", { 0.9, 0.9, 0.9 })
+        iconAnchorLbl:SetPoint("TOPLEFT", 8, y - 4)
+        local iconAnchorDD = MakeAnchorDropdown(parent,
+            function() local c = ns:GetLabelsConfig(key); return c and c.iconAnchor end,
+            function(v) ns:SetLabelOption(key, "iconAnchor", v) end)
+        iconAnchorDD:SetPoint("TOPLEFT", 100, y)
+        y = y - ROW - 6
+
+        local ICON_X_SLIDER = { key = "iconXOffset", label = "Icon X Offset",
+            tooltip = "Horizontal offset for the totem icon (positive = right).",
+            min = -200, max = 200, step = 1, default = 0 }
+        local iconX = MakeSlider(parent, ICON_X_SLIDER,
+            function() local c = ns:GetLabelsConfig(key); return c and (c.iconXOffset or 0) or 0 end,
+            function(v) ns:SetLabelOption(key, "iconXOffset", v) end)
+        iconX:SetPoint("TOPLEFT", 8, y - 14)
+        y = y - 44
+
+        local ICON_Y_SLIDER = { key = "iconYOffset", label = "Icon Y Offset",
+            tooltip = "Vertical offset for the totem icon (positive = up).",
+            min = -100, max = 100, step = 1, default = 22 }
+        local iconY = MakeSlider(parent, ICON_Y_SLIDER,
+            function() local c = ns:GetLabelsConfig(key); return c and (c.iconYOffset or 22) or 22 end,
+            function(v) ns:SetLabelOption(key, "iconYOffset", v) end)
+        iconY:SetPoint("TOPLEFT", 8, y - 14)
+        y = y - 44
     end
 
     return y - 8
