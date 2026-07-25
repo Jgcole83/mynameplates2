@@ -287,6 +287,134 @@ local ALPHA_ENTRY = { key = "alpha", label = "Opacity (this category)",
                       tooltip = "Opacity multiplier for nameplates in this category. 1.00 = no override.",
                       min = 0.0, max = 1.0, step = 0.05, default = 1.0 }
 
+----------------------------------------------------------------------
+-- 1.35.1: Shared BBP-parity totem indicator controls.
+--
+-- These controls live in MyNamePlatesDB.labels.petTotemName (a single
+-- global settings block — one indicator for all totems, matching BBP's
+-- own architecture where there's ONE Totem Indicator config that
+-- applies to every totem plate).
+--
+-- We surface the same block in three places for discoverability:
+--   1. Labels tab → Pet & Totem Name block (where text + icon settings
+--      live together — mirrors "totem name + totem icon are two sides
+--      of the same feature").
+--   2. Enemy Totems category tab (primary discoverability — this is
+--      where users go looking for "how do I customize enemy totems").
+--   3. Enemy Psyfiend category tab (Psyfiend uses the same indicator
+--      classification as regular totems via UnitChannelInfo).
+--
+-- All three UI instances edit the SAME saved-variable path, so changes
+-- in one tab reflect immediately in the others.  This keeps the mental
+-- model simple ("one totem indicator config") while making the controls
+-- easy to find no matter which tab the user starts on.
+----------------------------------------------------------------------
+local TOTEM_INDICATOR_TOGGLES = {
+    { key = "enemiesOnly",         label = "Enemies only",
+      tip = "Show the indicator on enemy totems only.  Matches BBP's totemIndicatorEnemyOnly." },
+    { key = "showOtherIcons",      label = "Show other icons",
+      tip = "Render an icon on non-important totems too.  Off = only Capacitor / Psyfiend / Grounding-class totems get an icon." },
+    { key = "showCooldownSwipe",   label = "Cooldown swipe",
+      tip = "Show a reverse-fill cooldown swipe over the icon for Capacitor (2s) and Psyfiend (12s).  Matches BBP's showTotemIndicatorCooldownSwipe." },
+    { key = "noGlow",              label = "No glow",
+      tip = "Disable the important-totem glow halo.  Matches BBP's totemIndicatorNoGlow." },
+    { key = "noAnimation",         label = "No animation",
+      tip = "Disable the pulse animation on important-totem icons.  Matches BBP's totemIndicatorNoAnimation." },
+    { key = "colorHealthBar",      label = "Color HP (important)",
+      tip = "Recolor the healthbar with the totem's color for important totems (Capacitor/Psyfiend orange/purple, Grounding magenta).  Matches BBP's totemIndicatorColorHealthBar." },
+    { key = "colorHealthBarOthers",label = "Color HP (others)",
+      tip = "Recolor the healthbar with the generic totem color for non-important totems.  Matches BBP's totemIndicatorColorOtherHealthBars." },
+    { key = "colorName",           label = "Color name (important)",
+      tip = "Recolor the name text with the totem color for important totems.  Matches BBP's totemIndicatorColorName." },
+    { key = "colorNameOthers",     label = "Color name (others)",
+      tip = "Recolor the name text with the generic totem color for non-important totems.  Matches BBP's totemIndicatorColorNameOthers." },
+    { key = "hideHealthBar",       label = "Hide HP bar",
+      tip = "Hide the healthbar entirely except when the totem is your current target.  Matches BBP's totemIndicatorHideHealthBar." },
+    { key = "hideName",            label = "Hide name",
+      tip = "Blank out the name text on classified totem plates.  Matches BBP's totemIndicatorHideNameAndShiftIconDown." },
+}
+
+-- Reusable helper that emits the full BBP-parity block onto `parent`
+-- starting at `startY`, returning the new y-cursor.  Layout is the
+-- same across every host tab so users see a consistent panel.
+--
+-- IMPORTANT: writes to MyNamePlatesDB.labels.petTotemName — a
+-- SHARED global block.  Every host tab edits the same underlying
+-- settings; the same block on the Labels tab, Enemy Totems tab, and
+-- Enemy Psyfiend tab all reflect the same values.
+local function BuildTotemIndicatorControls(parent, startY, options)
+    options = options or {}
+    local labelKey = "petTotemName"
+    local y = startY
+
+    local behavHeading = MakeLabel(parent,
+        options.heading or "Totem indicator (BBP parity):",
+        { 1.0, 0.85, 0.3 })
+    behavHeading:SetPoint("TOPLEFT", 8, y - 4)
+    y = y - ROW
+
+    local behavNote = MakeLabel(parent,
+        options.note
+            or "Important totems (Capacitor / Psyfiend / Grounding) get glow + pulse + cooldown by default.",
+        { 0.75, 0.75, 0.75 })
+    behavNote:SetPoint("TOPLEFT", 8, y - 4)
+    y = y - ROW
+
+    -- Two-column layout for the toggle grid (mirrors BBP's Advanced
+    -- Settings layout).
+    local togStartY = y
+    for i, t in ipairs(TOTEM_INDICATOR_TOGGLES) do
+        local col = ((i - 1) % 2 == 0) and 8 or 200
+        local r   = math.floor((i - 1) / 2)
+        local ty  = togStartY - (r * ROW)
+        local tk  = t.key
+        local cb = MakeCheckbox(parent, t.label,
+            function() local c = ns:GetLabelsConfig(labelKey); return c and c[tk] end,
+            function(on) ns:SetLabelOption(labelKey, tk, on and true or false) end,
+            t.tip)
+        cb:SetPoint("TOPLEFT", col, ty)
+    end
+    local togRows = math.ceil(#TOTEM_INDICATOR_TOGGLES / 2)
+    y = togStartY - (togRows * ROW) - 6
+
+    -- Generic totem color picker (BBP totemIndicatorTotemColor).
+    local gcLabel = MakeLabel(parent, "Generic totem color:", { 0.9, 0.9, 0.9 })
+    gcLabel:SetPoint("TOPLEFT", 8, y - 4)
+    local gcSwatch = MakeColorSwatch(parent,
+        function()
+            local c = ns:GetLabelsConfig(labelKey)
+            return (c and c.genericColor) or { 0.40, 0.34, 0.21 }
+        end,
+        function(r, g, b)
+            local c = ns:GetLabelsConfig(labelKey)
+            if not c then return end
+            local gc = c.genericColor
+            if type(gc) ~= "table" then
+                gc = { 0.40, 0.34, 0.21 }
+                c.genericColor = gc
+            end
+            gc[1], gc[2], gc[3] = r, g, b
+            if ns.RefreshAllLabels then ns:RefreshAllLabels() end
+        end)
+    gcSwatch:SetPoint("TOPLEFT", 150, y)
+    local gcNote = MakeLabel(parent,
+        "Used for unimportant totem icons + generic-totem HP/name recolor.",
+        { 0.7, 0.7, 0.7 })
+    gcNote:SetPoint("TOPLEFT", 8, y - ROW + 2)
+    y = y - ROW - 18
+
+    -- Optional cross-reference footer — points users to the other
+    -- tabs so they know these settings are shared globally.
+    if options.crossRef then
+        local crossRef = MakeLabel(parent, options.crossRef,
+            { 0.6, 0.6, 0.6 })
+        crossRef:SetPoint("TOPLEFT", 8, y - 4)
+        y = y - ROW
+    end
+
+    return y - 8
+end
+
 local function AddCategoryControls(content, def, startY)
     local y = startY
 
@@ -476,20 +604,73 @@ end
 ----------------------------------------------------------------------
 -- Category page builder (dispatches based on def.kind)
 ----------------------------------------------------------------------
+-- 1.35.1: which category tabs get the BBP-parity totem indicator
+-- controls injected between the standard controls (show/scale/alpha)
+-- and the per-NPC list.  Both totem-family tabs qualify: Enemy Totems
+-- (all standard totems) and Enemy Psyfiend (routes through the same
+-- indicator via the channel-first classifier heuristic).
+--
+-- These settings are GLOBAL (MyNamePlatesDB.labels.petTotemName) so
+-- the two tabs share values -- editing "No glow" on Enemy Totems flips
+-- it for Psyfiend too and vice versa.  Same behavior as BBP which has
+-- one "Totem Indicator" for all totem plates.
+local TOTEM_INDICATOR_CATEGORIES = {
+    enemyTotems   = true,
+    enemyPsyfiend = true,
+}
+
 local function BuildCategoryPanel(panel, def)
     AddHeader(panel, def.label, def.blurb)
 
-    local content = CreateFrame("Frame", nil, panel)
-    content:SetPoint("TOPLEFT",     PAD,    -PAD * 4)
-    content:SetPoint("BOTTOMRIGHT", -PAD,    PAD)
+    -- 1.35.1: wrap the panel content in a ScrollFrame for the totem
+    -- category tabs -- the added BBP-parity block + NPC list can push
+    -- past the standard panel height, and users need to scroll to
+    -- reach the list.  Non-totem tabs keep the original layout for
+    -- backwards compat (no visual change on any other tab).
+    local content
+    if TOTEM_INDICATOR_CATEGORIES[def.id] then
+        local scroll = CreateFrame("ScrollFrame", nil, panel, "UIPanelScrollFrameTemplate")
+        scroll:SetPoint("TOPLEFT",     PAD,    -PAD * 4)
+        scroll:SetPoint("BOTTOMRIGHT", -PAD * 2, PAD)
+        content = CreateFrame("Frame", nil, scroll)
+        content:SetSize(560, 1)
+        scroll:SetScrollChild(content)
+    else
+        content = CreateFrame("Frame", nil, panel)
+        content:SetPoint("TOPLEFT",     PAD,    -PAD * 4)
+        content:SetPoint("BOTTOMRIGHT", -PAD,    PAD)
+    end
 
     local y = -PAD
     if def.kind == "master" or def.kind == "list" then
         y = AddCategoryControls(content, def, y)
     end
+
+    -- 1.35.1: inject the shared BBP-parity totem indicator block on
+    -- the two totem-family tabs.  Same helper used on Labels →
+    -- Pet & Totem Name so all three UI instances edit the same
+    -- underlying settings.  The cross-ref footer tells users this
+    -- is a shared config.
+    if TOTEM_INDICATOR_CATEGORIES[def.id] then
+        y = y - 8
+        y = BuildTotemIndicatorControls(content, y, {
+            heading  = "Totem indicator (BBP parity):",
+            note     = "Shared with the other totem tab and with Labels → Pet & Totem Name. Editing here updates them all.",
+            crossRef = "Icon size / anchor / offset lives on Labels → Pet & Totem Name.",
+        })
+    end
+
     if def.kind == "list" then
         y = y - 6
         BuildNpcList(content, def, y)
+    end
+
+    -- Size the scroll content so the vertical scrollbar knows its
+    -- extent on the totem tabs.  y is negative and grows more
+    -- negative as we add controls, so absolute value gives the
+    -- required height.
+    if TOTEM_INDICATOR_CATEGORIES[def.id] then
+        content:SetSize(560, math.max(-y + PAD * 2, 400))
     end
 end
 
@@ -1121,99 +1302,14 @@ local function BuildLabelBlock(parent, startY, key, headingLabel, defaultY)
         iconY:SetPoint("TOPLEFT", 8, y - 14)
         y = y - 44
 
-        -- ---------------------------------------------------------
-        -- 1.35.0: full BBP parity — glow / cd swipe / anim / recolor
-        -- / hide-hp / hide-name / generic color.
-        --
-        -- All controls mirror BBP midnight/gui.lua's "Totem Indicator"
-        -- Advanced Settings section (labels and behaviors chosen to
-        -- match the referenced screenshots so a BBP user recognises
-        -- them at a glance).  Grouped under an "Indicator behaviors"
-        -- sub-heading so the tab stays organised.
-        -- ---------------------------------------------------------
-        local behavHeading = MakeLabel(parent,
-            "Indicator behaviors (BBP parity):",
-            { 1.0, 0.85, 0.3 })
-        behavHeading:SetPoint("TOPLEFT", 8, y - 4)
-        y = y - ROW
-
-        local behavNote = MakeLabel(parent,
-            "Important totems (Capacitor / Psyfiend / Grounding) get glow + pulse + cooldown by default.",
-            { 0.75, 0.75, 0.75 })
-        behavNote:SetPoint("TOPLEFT", 8, y - 4)
-        y = y - ROW
-
-        -- Two-column layout for the toggle grid (mirrors BBP's
-        -- Advanced Settings which stacks these two per row).
-        local TOGGLES = {
-            { key = "enemiesOnly",         label = "Enemies only",
-              tip = "Show the indicator on enemy totems only.  Matches BBP's totemIndicatorEnemyOnly." },
-            { key = "showOtherIcons",      label = "Show other icons",
-              tip = "Render an icon on non-important totems too.  Off = only Capacitor / Psyfiend / Grounding-class totems get an icon." },
-            { key = "showCooldownSwipe",   label = "Cooldown swipe",
-              tip = "Show a reverse-fill cooldown swipe over the icon for Capacitor (2s) and Psyfiend (12s).  Matches BBP's showTotemIndicatorCooldownSwipe." },
-            { key = "noGlow",              label = "No glow",
-              tip = "Disable the important-totem glow halo.  Matches BBP's totemIndicatorNoGlow." },
-            { key = "noAnimation",         label = "No animation",
-              tip = "Disable the pulse animation on important-totem icons.  Matches BBP's totemIndicatorNoAnimation." },
-            { key = "colorHealthBar",      label = "Color HP (important)",
-              tip = "Recolor the healthbar with the totem's color for important totems (Capacitor/Psyfiend orange/purple, Grounding magenta).  Matches BBP's totemIndicatorColorHealthBar." },
-            { key = "colorHealthBarOthers",label = "Color HP (others)",
-              tip = "Recolor the healthbar with the generic totem color for non-important totems.  Matches BBP's totemIndicatorColorOtherHealthBars." },
-            { key = "colorName",           label = "Color name (important)",
-              tip = "Recolor the name text with the totem color for important totems.  Matches BBP's totemIndicatorColorName." },
-            { key = "colorNameOthers",     label = "Color name (others)",
-              tip = "Recolor the name text with the generic totem color for non-important totems.  Matches BBP's totemIndicatorColorNameOthers." },
-            { key = "hideHealthBar",       label = "Hide HP bar",
-              tip = "Hide the healthbar entirely except when the totem is your current target.  Matches BBP's totemIndicatorHideHealthBar." },
-            { key = "hideName",            label = "Hide name",
-              tip = "Blank out the name text on classified totem plates.  Matches BBP's totemIndicatorHideNameAndShiftIconDown." },
-        }
-        local togStartY = y
-        for i, t in ipairs(TOGGLES) do
-            local col = ((i - 1) % 2 == 0) and 8 or 200
-            local r   = math.floor((i - 1) / 2)
-            local ty  = togStartY - (r * ROW)
-            local tk  = t.key
-            local cb = MakeCheckbox(parent, t.label,
-                function() local c = ns:GetLabelsConfig(key); return c and c[tk] end,
-                function(on) ns:SetLabelOption(key, tk, on and true or false) end,
-                t.tip)
-            cb:SetPoint("TOPLEFT", col, ty)
-        end
-        local togRows = math.ceil(#TOGGLES / 2)
-        y = togStartY - (togRows * ROW) - 6
-
-        -- Generic totem color picker (BBP totemIndicatorTotemColor).
-        -- Used for the icon tint, glow, and (when the recolor toggles
-        -- are on) the healthbar and name of non-important totems.
-        local gcLabel = MakeLabel(parent, "Generic totem color:", { 0.9, 0.9, 0.9 })
-        gcLabel:SetPoint("TOPLEFT", 8, y - 4)
-        local gcSwatch = MakeColorSwatch(parent,
-            function()
-                local c = ns:GetLabelsConfig(key)
-                return (c and c.genericColor) or { 0.40, 0.34, 0.21 }
-            end,
-            function(r, g, b)
-                -- Write into the existing table so any live references
-                -- (e.g. _totemIconApplyState) see the update on next
-                -- refresh without needing a table swap.
-                local c = ns:GetLabelsConfig(key)
-                if not c then return end
-                local gc = c.genericColor
-                if type(gc) ~= "table" then
-                    gc = { 0.40, 0.34, 0.21 }
-                    c.genericColor = gc
-                end
-                gc[1], gc[2], gc[3] = r, g, b
-                if ns.RefreshAllLabels then ns:RefreshAllLabels() end
-            end)
-        gcSwatch:SetPoint("TOPLEFT", 150, y)
-        local gcNote = MakeLabel(parent,
-            "Used for unimportant totem icons + generic-totem HP/name recolor.",
-            { 0.7, 0.7, 0.7 })
-        gcNote:SetPoint("TOPLEFT", 8, y - ROW + 2)
-        y = y - ROW - 18
+        -- 1.35.1: BBP-parity totem indicator controls -- extracted to
+        -- a shared helper so the Enemy Totems and Enemy Psyfiend
+        -- category tabs surface the same block.  Same underlying
+        -- settings (MyNamePlatesDB.labels.petTotemName), same layout.
+        y = BuildTotemIndicatorControls(parent, y, {
+            heading  = "Totem indicator (BBP parity):",
+            note     = "Also available on Enemy Totems and Enemy Psyfiend tabs -- editing anywhere updates all three.",
+        })
     end
 
     return y - 8
