@@ -1120,6 +1120,100 @@ local function BuildLabelBlock(parent, startY, key, headingLabel, defaultY)
             function(v) ns:SetLabelOption(key, "iconYOffset", v) end)
         iconY:SetPoint("TOPLEFT", 8, y - 14)
         y = y - 44
+
+        -- ---------------------------------------------------------
+        -- 1.35.0: full BBP parity — glow / cd swipe / anim / recolor
+        -- / hide-hp / hide-name / generic color.
+        --
+        -- All controls mirror BBP midnight/gui.lua's "Totem Indicator"
+        -- Advanced Settings section (labels and behaviors chosen to
+        -- match the referenced screenshots so a BBP user recognises
+        -- them at a glance).  Grouped under an "Indicator behaviors"
+        -- sub-heading so the tab stays organised.
+        -- ---------------------------------------------------------
+        local behavHeading = MakeLabel(parent,
+            "Indicator behaviors (BBP parity):",
+            { 1.0, 0.85, 0.3 })
+        behavHeading:SetPoint("TOPLEFT", 8, y - 4)
+        y = y - ROW
+
+        local behavNote = MakeLabel(parent,
+            "Important totems (Capacitor / Psyfiend / Grounding) get glow + pulse + cooldown by default.",
+            { 0.75, 0.75, 0.75 })
+        behavNote:SetPoint("TOPLEFT", 8, y - 4)
+        y = y - ROW
+
+        -- Two-column layout for the toggle grid (mirrors BBP's
+        -- Advanced Settings which stacks these two per row).
+        local TOGGLES = {
+            { key = "enemiesOnly",         label = "Enemies only",
+              tip = "Show the indicator on enemy totems only.  Matches BBP's totemIndicatorEnemyOnly." },
+            { key = "showOtherIcons",      label = "Show other icons",
+              tip = "Render an icon on non-important totems too.  Off = only Capacitor / Psyfiend / Grounding-class totems get an icon." },
+            { key = "showCooldownSwipe",   label = "Cooldown swipe",
+              tip = "Show a reverse-fill cooldown swipe over the icon for Capacitor (2s) and Psyfiend (12s).  Matches BBP's showTotemIndicatorCooldownSwipe." },
+            { key = "noGlow",              label = "No glow",
+              tip = "Disable the important-totem glow halo.  Matches BBP's totemIndicatorNoGlow." },
+            { key = "noAnimation",         label = "No animation",
+              tip = "Disable the pulse animation on important-totem icons.  Matches BBP's totemIndicatorNoAnimation." },
+            { key = "colorHealthBar",      label = "Color HP (important)",
+              tip = "Recolor the healthbar with the totem's color for important totems (Capacitor/Psyfiend orange/purple, Grounding magenta).  Matches BBP's totemIndicatorColorHealthBar." },
+            { key = "colorHealthBarOthers",label = "Color HP (others)",
+              tip = "Recolor the healthbar with the generic totem color for non-important totems.  Matches BBP's totemIndicatorColorOtherHealthBars." },
+            { key = "colorName",           label = "Color name (important)",
+              tip = "Recolor the name text with the totem color for important totems.  Matches BBP's totemIndicatorColorName." },
+            { key = "colorNameOthers",     label = "Color name (others)",
+              tip = "Recolor the name text with the generic totem color for non-important totems.  Matches BBP's totemIndicatorColorNameOthers." },
+            { key = "hideHealthBar",       label = "Hide HP bar",
+              tip = "Hide the healthbar entirely except when the totem is your current target.  Matches BBP's totemIndicatorHideHealthBar." },
+            { key = "hideName",            label = "Hide name",
+              tip = "Blank out the name text on classified totem plates.  Matches BBP's totemIndicatorHideNameAndShiftIconDown." },
+        }
+        local togStartY = y
+        for i, t in ipairs(TOGGLES) do
+            local col = ((i - 1) % 2 == 0) and 8 or 200
+            local r   = math.floor((i - 1) / 2)
+            local ty  = togStartY - (r * ROW)
+            local tk  = t.key
+            local cb = MakeCheckbox(parent, t.label,
+                function() local c = ns:GetLabelsConfig(key); return c and c[tk] end,
+                function(on) ns:SetLabelOption(key, tk, on and true or false) end,
+                t.tip)
+            cb:SetPoint("TOPLEFT", col, ty)
+        end
+        local togRows = math.ceil(#TOGGLES / 2)
+        y = togStartY - (togRows * ROW) - 6
+
+        -- Generic totem color picker (BBP totemIndicatorTotemColor).
+        -- Used for the icon tint, glow, and (when the recolor toggles
+        -- are on) the healthbar and name of non-important totems.
+        local gcLabel = MakeLabel(parent, "Generic totem color:", { 0.9, 0.9, 0.9 })
+        gcLabel:SetPoint("TOPLEFT", 8, y - 4)
+        local gcSwatch = MakeColorSwatch(parent,
+            function()
+                local c = ns:GetLabelsConfig(key)
+                return (c and c.genericColor) or { 0.40, 0.34, 0.21 }
+            end,
+            function(r, g, b)
+                -- Write into the existing table so any live references
+                -- (e.g. _totemIconApplyState) see the update on next
+                -- refresh without needing a table swap.
+                local c = ns:GetLabelsConfig(key)
+                if not c then return end
+                local gc = c.genericColor
+                if type(gc) ~= "table" then
+                    gc = { 0.40, 0.34, 0.21 }
+                    c.genericColor = gc
+                end
+                gc[1], gc[2], gc[3] = r, g, b
+                if ns.RefreshAllLabels then ns:RefreshAllLabels() end
+            end)
+        gcSwatch:SetPoint("TOPLEFT", 150, y)
+        local gcNote = MakeLabel(parent,
+            "Used for unimportant totem icons + generic-totem HP/name recolor.",
+            { 0.7, 0.7, 0.7 })
+        gcNote:SetPoint("TOPLEFT", 8, y - ROW + 2)
+        y = y - ROW - 18
     end
 
     return y - 8

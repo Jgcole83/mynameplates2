@@ -110,6 +110,44 @@ local function BuildDefaults()
                     minion      = false,
                     minor       = false,
                 },
+
+                -- ---------------------------------------------------------
+                -- 1.35.0: full BBP-style totem indicator parity.
+                --
+                -- Cross-referenced against BBP midnight/modules/totem.lua
+                -- (ApplyTotemIconsAndColorNameplate + ApplyTotemAttributes)
+                -- so this addon renders the same visual language as BBP:
+                -- important totems (Capacitor / Psyfiend / Grounding-class
+                -- auras) get a glow + cooldown swipe + pulse animation and
+                -- optionally recolor the healthbar / name; unimportant
+                -- totems fall back to a plain generic icon in the user's
+                -- generic-totem color.  All behaviors are individually
+                -- toggleable so users can opt into just the parts they
+                -- want (e.g. glow-only, or color-only).
+                --
+                -- Defaults chosen to mirror BBP out of the box:
+                --   * enemiesOnly OFF -> visible on friendly totems too
+                --   * colorHealthBar / colorName ON -> important totems
+                --     recolor the plate (matches BBP defaults)
+                --   * *Others OFF -> generic totems don't recolor
+                --   * showOtherIcons ON -> render an icon on unimportant
+                --     totems too (the whole point of BBP's system)
+                --   * showCooldownSwipe ON, noGlow / noAnimation OFF
+                --   * hideHealthBar / hideName OFF (aggressive; opt-in)
+                --   * genericColor = BBP's default brown {0.4, 0.34, 0.21}
+                -- ---------------------------------------------------------
+                enemiesOnly          = false,
+                colorHealthBar       = true,
+                colorHealthBarOthers = false,
+                colorName            = true,
+                colorNameOthers      = false,
+                hideHealthBar        = false,
+                hideName             = false,
+                showOtherIcons       = true,
+                showCooldownSwipe    = true,
+                noGlow               = false,
+                noAnimation          = false,
+                genericColor         = { 0.40, 0.34, 0.21 },
             },
             spec = {
                 enabled        = "1",          -- show spec by default

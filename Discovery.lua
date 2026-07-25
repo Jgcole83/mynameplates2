@@ -443,7 +443,14 @@ local function ApplyOverrides(info)
 
     -- Friendly healthbar color override (set on every refresh because
     -- Blizzard's CompactUnitFrame_UpdateHealthColor resets this back).
-    if info.unit and plate.UnitFrame and plate.UnitFrame.healthBar then
+    -- 1.35.0: skip when a totem-color marker is present on the uf.
+    -- The totem indicator (Labels._ApplyTotemHealthColor) stashes
+    -- {r,g,b} on uf.MyNP_totemColor when the plate is classified as
+    -- a totem the user has opted to recolor; totem color always wins
+    -- so friendly totems still get their totem indicator treatment
+    -- instead of the flat friendly green.
+    if info.unit and plate.UnitFrame and plate.UnitFrame.healthBar
+       and not plate.UnitFrame.MyNP_totemColor then
         local fc = MyNamePlatesDB.friendlyColor
         if fc and fc.enabled == "1"
            and UnitIsFriend("player", info.unit) then
@@ -514,6 +521,14 @@ local function HookUnitFrame(plate)
         pcall(hooksecurefunc, hb, "SetStatusBarColor",
             function(self, r, g, b)
                 pcall(function()
+                    -- 1.35.0: totem color wins.  If Labels module has
+                    -- classified this plate as a totem and stashed a
+                    -- color marker on the uf, don't fight it — the
+                    -- CompactUnitFrame_UpdateHealthColor hook will
+                    -- re-apply totem color anyway, so overwriting
+                    -- here just causes flicker between totem-color
+                    -- and friendly-color.
+                    if uf.MyNP_totemColor then return end
                     local fc = MyNamePlatesDB and MyNamePlatesDB.friendlyColor
                     if not (fc and fc.enabled == "1") then return end
                     local u = uf.unit or uf.displayedUnit

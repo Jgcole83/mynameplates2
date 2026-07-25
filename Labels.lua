@@ -102,33 +102,56 @@ local TOTEM_COLOR_IMPORTANT= { 1.00, 0.00, 1.00 }   -- magenta (Grounding-class)
 local TOTEM_COLOR_CAP      = { 1.00, 0.69, 0.00 }   -- orange
 local TOTEM_COLOR_PSYFIEND = { 0.49, 0.00, 1.00 }   -- purple
 
+-- Read the user-configurable generic totem color (BBP parity —
+-- BetterBlizzPlatesDB.totemIndicatorTotemColor).  Falls back to the
+-- hardcoded neutral brown when the DB isn't ready yet.  Returns three
+-- values so callers can use it in multi-return classification without
+-- allocating a table.
+local function _GenericColorRGB()
+    local L = MyNamePlatesDB and MyNamePlatesDB.labels
+    local c = L and L.petTotemName and L.petTotemName.genericColor
+    if type(c) == "table" and c[1] and c[2] and c[3] then
+        return c[1], c[2], c[3]
+    end
+    return TOTEM_COLOR_GENERIC[1], TOTEM_COLOR_GENERIC[2], TOTEM_COLOR_GENERIC[3]
+end
+
 -- Classify a totem-plate's visual treatment using ONLY APIs that
 -- survive Midnight 12.x anonymisation on nameplate unit tokens.
 -- UnitCastingInfo / UnitChannelInfo / C_UnitAuras.GetUnitAuras are
 -- proven safe on secret nameplate tokens per BBP's shipping code.
 --
 -- 1.34.1: returns multiple values (icon, r, g, b) instead of a fresh
--- table per call.  RefreshAllLabels fires ~10 Hz per event and
--- iterates every plate; the previous table-per-call allocation was
--- ~20 fresh 3-4-field tables per second (~4 KB/sec of garbage) in
--- a mid-sized arena.  Multi-return has zero heap cost.
+-- table per call to eliminate ~20 tables/sec of garbage during refresh.
+--
+-- 1.35.0: full BBP-parity signature — returns:
+--   icon, r, g, b, isImportant, isImportantAura, duration, hasAura
+-- so the caller (_ApplyTotemIcon) can drive glow / cooldown swipe /
+-- animation / colorization gates the same way BBP's
+-- ApplyTotemIconsAndColorNameplate does.  Priority ORDER also swapped
+-- to match BBP: channel-first (Psyfiend), then cast (Capacitor), then
+-- aura, then generic.  Old order (cast first) worked in practice
+-- because no totem both casts and channels, but matching BBP exactly
+-- future-proofs against odd edge cases and keeps intent obvious.
 local function _ClassifyTotem(unit)
     if not unit then
-        return TOTEM_ICON_GENERIC,
-               TOTEM_COLOR_GENERIC[1], TOTEM_COLOR_GENERIC[2], TOTEM_COLOR_GENERIC[3]
+        local gr, gg, gb = _GenericColorRGB()
+        return TOTEM_ICON_GENERIC, gr, gg, gb, false, false, nil, false
     end
     -- Wrap every Unit* call in pcall — on rare edge cases (unit token
     -- flips secret mid-frame) these can throw and we don't want the
     -- whole label pipeline to fault.
-    local ok, casting = pcall(UnitCastingInfo, unit)
-    if ok and casting then
-        return TOTEM_ICON_CAP,
-               TOTEM_COLOR_CAP[1], TOTEM_COLOR_CAP[2], TOTEM_COLOR_CAP[3]
-    end
-    local ok2, channeling = pcall(UnitChannelInfo, unit)
-    if ok2 and channeling then
+    local ok1, channeling = pcall(UnitChannelInfo, unit)
+    if ok1 and channeling then
         return TOTEM_ICON_PSYFIEND,
-               TOTEM_COLOR_PSYFIEND[1], TOTEM_COLOR_PSYFIEND[2], TOTEM_COLOR_PSYFIEND[3]
+               TOTEM_COLOR_PSYFIEND[1], TOTEM_COLOR_PSYFIEND[2], TOTEM_COLOR_PSYFIEND[3],
+               true, false, 12, false
+    end
+    local ok2, casting = pcall(UnitCastingInfo, unit)
+    if ok2 and casting then
+        return TOTEM_ICON_CAP,
+               TOTEM_COLOR_CAP[1], TOTEM_COLOR_CAP[2], TOTEM_COLOR_CAP[3],
+               true, false, 2, false
     end
     if C_UnitAuras and C_UnitAuras.GetUnitAuras then
         local ok3, auras = pcall(C_UnitAuras.GetUnitAuras, unit, "HELPFUL")
@@ -142,15 +165,16 @@ local function _ClassifyTotem(unit)
                 end
                 if imp then
                     return a.icon,
-                           TOTEM_COLOR_IMPORTANT[1], TOTEM_COLOR_IMPORTANT[2], TOTEM_COLOR_IMPORTANT[3]
+                           TOTEM_COLOR_IMPORTANT[1], TOTEM_COLOR_IMPORTANT[2], TOTEM_COLOR_IMPORTANT[3],
+                           false, true, nil, true
                 end
-                return a.icon,
-                       TOTEM_COLOR_GENERIC[1], TOTEM_COLOR_GENERIC[2], TOTEM_COLOR_GENERIC[3]
+                local gr, gg, gb = _GenericColorRGB()
+                return a.icon, gr, gg, gb, false, false, nil, true
             end
         end
     end
-    return TOTEM_ICON_GENERIC,
-           TOTEM_COLOR_GENERIC[1], TOTEM_COLOR_GENERIC[2], TOTEM_COLOR_GENERIC[3]
+    local gr, gg, gb = _GenericColorRGB()
+    return TOTEM_ICON_GENERIC, gr, gg, gb, false, false, nil, false
 end
 
 -- Lazy per-plate icon widget.  Same forbidden-check pattern as
@@ -158,6 +182,18 @@ end
 -- forbidden UnitFrame propagates addon taint, so we bail on those
 -- plates rather than render the icon (matches BBP's own defensive
 -- posture on forbidden arena frames).
+--
+-- 1.35.0: full BBP frame hierarchy — icon + glow (with mask) +
+-- cooldown swipe + pulse animation group.  Mirrors BBP's
+-- CreateTotemComponents + ApplyGlow so the visual result is identical.
+--
+-- Structure:
+--   frame  (Frame,       HIGH strata,     parent = uf)
+--     tex          (Texture, OVERLAY,     :SetAllPoints(frame))
+--     mask         (MaskTexture,          :SetAllPoints(tex))  -- only added to tex when glow shows
+--     glow         (Texture, OVERLAY-7,   ADD blend, atlas "clickcast-highlight-spellbook", desaturated)
+--     cd           (Cooldown, "CooldownFrameTemplate", reverse swipe, inset 1px)
+--     anim         (AnimationGroup, pulse Scale 1.1 <-> 0.9091, 0.5s each, REPEAT)
 local function _GetTotemIcon(plate)
     if plate.MyNP_TotemIcon then return plate.MyNP_TotemIcon end
     local uf = plate.UnitFrame
@@ -181,8 +217,80 @@ local function _GetTotemIcon(plate)
         pcall(frame.SetIgnoreParentAlpha, frame, true)
     end
 
+    -- Glow layer (BBP ApplyGlow pattern).  Lives at OVERLAY layer 7 so
+    -- it stacks on top of the icon.  ADD blend + desaturated makes the
+    -- atlas render as a colored halo rather than the raw pink/purple
+    -- of the source texture.  Hidden by default; _ApplyTotemIcon
+    -- decides whether to show + which color per refresh.
+    frame.glow = frame:CreateTexture(nil, "OVERLAY", nil, 7)
+    frame.glow:SetBlendMode("ADD")
+    if frame.glow.SetAtlas then
+        pcall(frame.glow.SetAtlas, frame.glow, "clickcast-highlight-spellbook")
+    end
+    frame.glow:SetDesaturated(true)
+    frame.glow:Hide()
+
+    -- Mask for the glow (BBP pattern) — softens the icon's square
+    -- corners so the halo blends into a rounded highlight rather than
+    -- clipping at the icon rectangle.  Only wired to the icon texture
+    -- when the glow is actually showing (see _ApplyTotemIcon), so the
+    -- icon stays crisp/square when no glow is applied.
+    frame.mask = frame:CreateMaskTexture()
+    pcall(frame.mask.SetTexture, frame.mask,
+        "Interface\\TalentFrame\\talentsmasknodechoiceflyout",
+        "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+    frame.mask:SetAllPoints(tex)
+    frame.maskAttached = false
+
+    -- Cooldown swipe (BBP pattern) — reverse-fill so the sweep
+    -- represents time REMAINING, not time elapsed.  Inset 1px on
+    -- every side so the swipe doesn't clip the icon border.
+    -- Started/stopped by _ApplyTotemIcon based on classification
+    -- (Cap = 2s, Psyfiend = 12s, others = no swipe).
+    frame.cd = CreateFrame("Cooldown", nil, frame, "CooldownFrameTemplate")
+    frame.cd:SetPoint("TOPLEFT",     frame, "TOPLEFT",     1, -1)
+    frame.cd:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -1, 1)
+    if frame.cd.SetReverse then pcall(frame.cd.SetReverse, frame.cd, true) end
+    frame.cd:Hide()
+
+    -- Pulse animation group (BBP SetupUnifiedAnimation).  Two Scale
+    -- animations in sequence — 0.5s grow to 1.1x, 0.5s shrink to
+    -- 0.9091x — looping REPEAT indefinitely once :Play() is called.
+    -- Only played on important totems (Cap/Psyfiend/Grounding) so the
+    -- eye is naturally drawn to the plates that matter.
+    local ag = frame:CreateAnimationGroup()
+    local grow = ag:CreateAnimation("Scale")
+    if grow.SetOrder    then grow:SetOrder(1) end
+    if grow.SetScale    then grow:SetScale(1.1, 1.1) end
+    if grow.SetDuration then grow:SetDuration(0.5) end
+    local shrink = ag:CreateAnimation("Scale")
+    if shrink.SetOrder    then shrink:SetOrder(2) end
+    if shrink.SetScale    then shrink:SetScale(0.9091, 0.9091) end
+    if shrink.SetDuration then shrink:SetDuration(0.5) end
+    if ag.SetLooping then ag:SetLooping("REPEAT") end
+    frame.anim = ag
+
     plate.MyNP_TotemIcon = frame
     return frame
+end
+
+-- Attach / detach the mask on the icon texture.  Kept as a helper
+-- because it's called from two branches inside _ApplyTotemIcon
+-- (show-with-glow and hide-glow) and BBP's own code does the same
+-- add/remove dance to keep the icon crisp when no glow is present.
+local function _SetMaskAttached(frame, attached)
+    if not (frame and frame.tex and frame.mask) then return end
+    if attached and not frame.maskAttached then
+        if frame.tex.AddMaskTexture then
+            pcall(frame.tex.AddMaskTexture, frame.tex, frame.mask)
+        end
+        frame.maskAttached = true
+    elseif (not attached) and frame.maskAttached then
+        if frame.tex.RemoveMaskTexture then
+            pcall(frame.tex.RemoveMaskTexture, frame.tex, frame.mask)
+        end
+        frame.maskAttached = false
+    end
 end
 
 -- Decide whether this plate is a candidate for the totem icon.  Uses
@@ -207,18 +315,143 @@ local function _TotemIconType(plate, unit)
     return st or "totem"   -- unknown-type summons default to "totem" for gating
 end
 
--- 1.34.1: shared apply-state upvalue for the pcall'd inner body.
--- We reuse a single table across every _ApplyTotemIcon call rather
--- than creating a closure over locals — closures allocate on every
--- call, the reused table does not.  Only one _ApplyTotemIcon call
--- is in flight at any given time (the outer refresh loop is single-
--- threaded), so a shared state buffer is safe.
-local _totemIconApplyState = { frame = nil, uf = nil, cfg = nil,
-                               icon = nil, r = 0, g = 0, b = 0 }
+-- 1.34.1 / 1.35.0: shared apply-state upvalue for the pcall'd inner
+-- body.  Reused across every _ApplyTotemIcon call to avoid closure
+-- allocation on the 10 Hz refresh path.  Only one _ApplyTotemIcon
+-- call is in flight at any given time (single-threaded game loop),
+-- so a shared state buffer is safe.
+--
+-- 1.35.0: extended with the full BBP classification result
+-- (isImportant / isImportantAura / duration / hasAura) plus the
+-- resolved isFriend flag so the inner body has everything it needs
+-- to drive glow / cd / anim / recolor / hide gates.
+local _totemIconApplyState = {
+    frame = nil, uf = nil, cfg = nil,
+    icon = nil, r = 0, g = 0, b = 0,
+    isImportant = false, isImportantAura = false,
+    duration = nil, hasAura = false,
+    isFriend = false, plate = nil, unit = nil,
+}
+
+-- Apply healthbar recolor for a classified totem.  Sets a persistent
+-- `uf.MyNP_totemColor` marker + drives an immediate SetStatusBarColor.
+-- The persistent marker is read by our CompactUnitFrame_UpdateHealthColor
+-- hook so Blizzard's UNIT_HEALTH-driven class-color resets don't
+-- flash back through — mirrors BBP's `needsRecolor` sentinel.
+local function _ApplyTotemHealthColor(uf, cfg, isImportant, isImportantAura,
+                                      hasAura, r, g, b)
+    if not (uf and uf.healthBar) then return end
+    -- Decide whether we're recoloring at all.  BBP splits into two
+    -- gates: important totems use `colorHealthBar`, generic totems
+    -- use `colorHealthBarOthers`.  Both default cascading into the
+    -- "recolor" branch below via _totemColor markers.
+    local isImp = isImportant or isImportantAura
+    local shouldColor = (isImp and cfg.colorHealthBar)
+                     or ((not isImp) and cfg.colorHealthBarOthers)
+    if not shouldColor then
+        -- Not coloring — clear any previous marker so the hook lets
+        -- Blizzard's class color take over again next update.
+        uf.MyNP_totemColor = nil
+        return
+    end
+    -- Persistent marker for the UpdateHealthColor hook.  Reused table
+    -- lives on the uf itself — no shared upvalue needed because it's
+    -- per-frame state, and the hook needs to find it by frame lookup.
+    local mk = uf.MyNP_totemColor
+    if not mk then
+        mk = { 0, 0, 0 }
+        uf.MyNP_totemColor = mk
+    end
+    mk[1], mk[2], mk[3] = r, g, b
+    -- Apply immediately so the user sees the color THIS frame instead
+    -- of waiting for the next UpdateHealthColor cycle.
+    pcall(uf.healthBar.SetStatusBarColor, uf.healthBar, r, g, b)
+end
+
+-- Apply name text recolor / hide for a classified totem.  Also sets
+-- a persistent `uf.MyNP_totemNameColor` + `uf.MyNP_totemHideName`
+-- markers read by our CompactUnitFrame_UpdateName hook so Blizzard's
+-- own name-update path (fires on target change, aggro change, etc.)
+-- can't flash the plate name back to the default color/text.
+local function _ApplyTotemNameStyle(uf, cfg, isImportant, isImportantAura,
+                                    hasAura, r, g, b)
+    if not (uf and uf.name) then return end
+    local isImp = isImportant or isImportantAura
+    local shouldColor = (isImp and cfg.colorName)
+                     or ((not isImp) and cfg.colorNameOthers)
+    if shouldColor then
+        local mk = uf.MyNP_totemNameColor
+        if not mk then
+            mk = { 0, 0, 0 }
+            uf.MyNP_totemNameColor = mk
+        end
+        mk[1], mk[2], mk[3] = r, g, b
+        pcall(uf.name.SetVertexColor, uf.name, r, g, b)
+    else
+        uf.MyNP_totemNameColor = nil
+    end
+    -- Hide-name gate.  When on, we mark the plate so the
+    -- CompactUnitFrame_UpdateName hook clears the text after Blizzard
+    -- writes it — otherwise Blizzard's own updates paste the name
+    -- back a frame later.
+    if cfg.hideName then
+        uf.MyNP_totemHideName = true
+        pcall(uf.name.SetText, uf.name, "")
+    else
+        uf.MyNP_totemHideName = nil
+    end
+end
+
+-- Apply healthbar-hide gate (BBP totemIndicatorHideHealthBar).  Fades
+-- the HealthBarsContainer and the selection highlight when the totem
+-- is NOT the current target — targeted totems stay visible so the
+-- user can see health while they burn it down.
+local function _ApplyTotemHideHealthBar(uf, cfg, unit)
+    -- Container lookup is defensive — different Blizzard nameplate
+    -- templates use different names, and forbidden plates would throw.
+    local hbc = uf.HealthBarsContainer or uf.healthBar
+    if not hbc then return end
+    if not cfg.hideHealthBar then
+        -- Turn off — restore alpha if we previously zeroed it.
+        if uf.MyNP_totemHidHealth then
+            pcall(hbc.SetAlpha, hbc, 1)
+            if uf.selectionHighlight then
+                pcall(uf.selectionHighlight.SetAlpha, uf.selectionHighlight, 1)
+            end
+            uf.MyNP_totemHidHealth = nil
+        end
+        return
+    end
+    -- Determine target-ness safely.  On secret arena tokens we can't
+    -- call UnitIsUnit without tainting; assume "not the target" in
+    -- that case (the safe default is HIDE, which is the whole point
+    -- of the setting anyway).
+    local isTarget = false
+    if unit and not (issecretvalue and issecretvalue(unit)) then
+        local ok, v = pcall(UnitIsUnit, unit, "target")
+        if ok then isTarget = v and true or false end
+    end
+    if isTarget then
+        pcall(hbc.SetAlpha, hbc, 1)
+        if uf.selectionHighlight then
+            pcall(uf.selectionHighlight.SetAlpha, uf.selectionHighlight, 0.22)
+        end
+    else
+        pcall(hbc.SetAlpha, hbc, 0)
+        if uf.selectionHighlight then
+            pcall(uf.selectionHighlight.SetAlpha, uf.selectionHighlight, 0)
+        end
+    end
+    uf.MyNP_totemHidHealth = true
+end
+
 local function _ApplyTotemIconInner()
     local s = _totemIconApplyState
     local frame, uf, cfg = s.frame, s.uf, s.cfg
     if not (frame and uf and cfg) then return end
+
+    -- Position + size (kept configurable per user's choice — BBP uses
+    -- a fixed 30x30, we let the user tune via iconSize slider).
     local size = tonumber(cfg.iconSize) or 26
     frame:SetSize(size, size)
     frame:ClearAllPoints()
@@ -227,16 +460,178 @@ local function _ApplyTotemIconInner()
         cfg.iconAnchor or "TOP",
         tonumber(cfg.iconXOffset) or 0,
         tonumber(cfg.iconYOffset) or 22)
+
+    -- "Show other icons" gate (BBP totemIndicatorShowOtherIcons).
+    -- Important totems (Cap / Psyfiend / Grounding-class aura) always
+    -- show an icon; unimportant totems only show if the user opted in.
+    local isImp = s.isImportant or s.isImportantAura
+    if not isImp and not cfg.showOtherIcons then
+        frame:Hide()
+        if frame.cd    then frame.cd:Hide() end
+        if frame.glow  then frame.glow:Hide() end
+        if frame.anim  then pcall(frame.anim.Stop, frame.anim) end
+        _SetMaskAttached(frame, false)
+        return
+    end
+
+    -- Icon texture + tint.
     if frame.tex then
         frame.tex:SetTexture(s.icon or TOTEM_ICON_GENERIC)
         frame.tex:SetVertexColor(s.r, s.g, s.b, 1)
     end
+
+    -- Cooldown swipe (BBP showTotemIndicatorCooldownSwipe).  Only
+    -- shown on important totems that have a known duration
+    -- (classification returned 12 for Psyfiend, 2 for Capacitor).
+    if s.duration and cfg.showCooldownSwipe and frame.cd then
+        pcall(frame.cd.SetCooldown, frame.cd, GetTime(), s.duration)
+        pcall(frame.cd.Show, frame.cd)
+        -- Also honour the sub-toggles that BBP exposes for consistency:
+        -- SetDrawSwipe/Edge = true (default) draws the fill; a future
+        -- setting could disable them without hiding the frame entirely.
+        if frame.cd.SetDrawSwipe then pcall(frame.cd.SetDrawSwipe, frame.cd, true) end
+        if frame.cd.SetDrawEdge  then pcall(frame.cd.SetDrawEdge,  frame.cd, true) end
+    elseif frame.cd then
+        pcall(frame.cd.Hide, frame.cd)
+    end
+
+    -- Glow + pulse animation (BBP ApplyGlow).  Only for important
+    -- totems, and only when noGlow is off.  For aura-important totems
+    -- (Grounding-class) glow uses the important magenta; for
+    -- cast/channel-important totems (Cap/Psyfiend) glow uses the
+    -- totem's own color; for generic aura totems the glow stays
+    -- shown but tinted with the generic color at full alpha so the
+    -- icon still "pops" a bit even without important status.
+    local wantGlow = false
+    if isImp and not cfg.noGlow then
+        wantGlow = true
+    elseif s.hasAura and not cfg.noGlow then
+        -- BBP renders the glow for any aura totem too, but sets
+        -- alpha=0 for non-important — visually equivalent to no
+        -- glow but keeps the mask attached to soften the icon.
+        wantGlow = true
+    end
+
+    if wantGlow and frame.glow then
+        local offset = size * 0.41
+        frame.glow:ClearAllPoints()
+        frame.glow:SetPoint("TOPLEFT",     frame, "TOPLEFT",     -offset,  offset)
+        frame.glow:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT",  offset, -offset)
+        if s.hasAura and not s.isImportantAura then
+            -- Aura totem but not important: dim glow to match BBP
+            -- behavior (they SetAlphaFromBoolean isImportant, 1, 0).
+            frame.glow:SetVertexColor(s.r, s.g, s.b, 1)
+            frame.glow:SetAlpha(0)
+        else
+            frame.glow:SetVertexColor(s.r, s.g, s.b, 1)
+            frame.glow:SetAlpha(1)
+        end
+        frame.glow:Show()
+        _SetMaskAttached(frame, true)
+        -- Play animation unless the user opted out.  Only start it
+        -- if it isn't already playing so we don't reset the pulse
+        -- phase every 10 Hz refresh (visual jitter).
+        if frame.anim and not cfg.noAnimation then
+            if frame.anim.IsPlaying and not frame.anim:IsPlaying() then
+                pcall(frame.anim.Play, frame.anim)
+            elseif not frame.anim.IsPlaying then
+                pcall(frame.anim.Play, frame.anim)
+            end
+        elseif frame.anim then
+            pcall(frame.anim.Stop, frame.anim)
+        end
+    else
+        if frame.glow then frame.glow:Hide() end
+        if frame.anim then pcall(frame.anim.Stop, frame.anim) end
+        _SetMaskAttached(frame, false)
+    end
+
     frame:Show()
+
+    -- HP color / name style / hide-HP — apply AFTER the icon so a
+    -- failure here still leaves the icon rendered correctly.  These
+    -- write persistent markers on the uf that the CompactUnitFrame_*
+    -- hooks re-assert against Blizzard's own updates.
+    _ApplyTotemHealthColor(uf, cfg, s.isImportant, s.isImportantAura,
+                           s.hasAura, s.r, s.g, s.b)
+    _ApplyTotemNameStyle(uf, cfg, s.isImportant, s.isImportantAura,
+                         s.hasAura, s.r, s.g, s.b)
+    _ApplyTotemHideHealthBar(uf, cfg, s.unit)
+end
+
+-- Clear only the visual overlays (glow / cd / anim) without touching
+-- the persistent HP-color / name-color markers.  Used by "hide"
+-- branches inside _ApplyTotemIcon when the plate briefly falls out of
+-- the summon set but we don't want to fully reset (e.g. per-type
+-- filter toggling mid-frame).
+local function _HideTotemIconOverlays(plate)
+    local frame = plate and plate.MyNP_TotemIcon
+    if not frame then return end
+    pcall(frame.Hide, frame)
+    if frame.cd    then pcall(frame.cd.Hide, frame.cd) end
+    if frame.glow  then pcall(frame.glow.Hide, frame.glow) end
+    if frame.anim  then pcall(frame.anim.Stop, frame.anim) end
+    _SetMaskAttached(frame, false)
+end
+
+-- Full clear — hides the icon AND restores the healthbar / name /
+-- container alphas by dropping the persistent markers so Blizzard's
+-- next update cycle can run its normal path.  Called from the
+-- ClearTotemIconForPlate public entrypoint (Discovery invokes it on
+-- NAME_PLATE_UNIT_REMOVED) so a recycled plate doesn't inherit the
+-- previous totem's recolor / hidden-hp state.
+local function _FullClearTotemState(plate)
+    if not plate then return end
+    _HideTotemIconOverlays(plate)
+    local uf = plate.UnitFrame
+    if not uf then return end
+    -- Drop persistent markers.
+    uf.MyNP_totemColor     = nil
+    uf.MyNP_totemNameColor = nil
+    uf.MyNP_totemHideName  = nil
+    -- If we hid the healthbar, restore alpha before dropping the
+    -- flag — otherwise the recycled plate stays invisible.
+    if uf.MyNP_totemHidHealth then
+        local hbc = uf.HealthBarsContainer or uf.healthBar
+        if hbc then pcall(hbc.SetAlpha, hbc, 1) end
+        if uf.selectionHighlight then
+            pcall(uf.selectionHighlight.SetAlpha, uf.selectionHighlight, 1)
+        end
+        uf.MyNP_totemHidHealth = nil
+    end
+end
+
+-- 1.35.0: Psyfiend spawn-race workaround (BBP CHANGELOG 2.0.6).
+-- Psyfiends appear on a plate for a brief window BEFORE they start
+-- channeling — during that window our classifier can't detect them
+-- and they render as generic totems.  BBP schedules a 250ms
+-- re-classify to catch the channel start.  We do the same, guarded
+-- by a per-plate timer flag so 10 Hz refresh doesn't queue multiple
+-- pending re-classifies for the same plate.
+local _ApplyTotemIcon   -- fwd for the timer body
+local function _SchedulePsyfiendRecheck(plate)
+    if not plate then return end
+    if plate.MyNP_totemRecheckPending then return end
+    plate.MyNP_totemRecheckPending = true
+    C_Timer.After(0.25, function()
+        plate.MyNP_totemRecheckPending = nil
+        if not plate then return end
+        local uf = plate.UnitFrame
+        if not uf then return end
+        local u = uf.unit or uf.displayedUnit
+        if not u then return end
+        -- Only re-classify if a channel actually started in the
+        -- meantime (matches BBP's exact gate).
+        local ok, ch = pcall(UnitChannelInfo, u)
+        if ok and ch and _ApplyTotemIcon then
+            _ApplyTotemIcon(plate, u, nil)
+        end
+    end)
 end
 
 -- Apply / update / hide the icon overlay for a plate.  Idempotent and
 -- pcall-wrapped so it can't destabilise the outer refresh loop.
-local function _ApplyTotemIcon(plate, unit, isFriend)
+_ApplyTotemIcon = function(plate, unit, isFriend)
     if not plate then return end
     local uf = plate.UnitFrame
     if not uf then return end
@@ -244,19 +639,17 @@ local function _ApplyTotemIcon(plate, unit, isFriend)
 
     local L   = MyNamePlatesDB and MyNamePlatesDB.labels
     local cfg = L and L.petTotemName
-    local existing = plate.MyNP_TotemIcon
-    local function hide()
-        if existing then existing:Hide() end
-    end
 
     if not (cfg and cfg.enabled == "1" and cfg.showIcon) then
-        return hide()
+        return _FullClearTotemState(plate)
     end
 
     -- Per-summon-type filter — same table used by the name overlay.
     local st = _TotemIconType(plate, unit)
-    if not st then return hide() end
-    if cfg.types and cfg.types[st] == false then return hide() end
+    if not st then return _FullClearTotemState(plate) end
+    if cfg.types and cfg.types[st] == false then
+        return _FullClearTotemState(plate)
+    end
 
     -- Friend / enemy gate.  Reuse the resolved isFriend from caller —
     -- caller already handled secret-unit safety when deriving it.
@@ -269,19 +662,34 @@ local function _ApplyTotemIcon(plate, unit, isFriend)
             isFriend = ok and f or false
         end
     end
-    if isFriend and not cfg.applyFriendly then return hide() end
-    if (not isFriend) and not cfg.applyEnemy then return hide() end
+    if isFriend and not cfg.applyFriendly then return _FullClearTotemState(plate) end
+    if (not isFriend) and not cfg.applyEnemy then return _FullClearTotemState(plate) end
+
+    -- 1.35.0: enemies-only gate (BBP totemIndicatorEnemyOnly).
+    if cfg.enemiesOnly and isFriend then
+        return _FullClearTotemState(plate)
+    end
 
     -- Skip the classifier entirely on secret unit tokens (Unit*Info calls
     -- on a secret string can taint us) — render the generic totem icon
     -- and colour without probing the unit.  BBP does effectively the
     -- same when their heuristics come up empty.
-    local icon, r, g, b
+    local icon, r, g, b, isImportant, isImportantAura, duration, hasAura
     if issecretvalue and issecretvalue(unit) then
         icon = TOTEM_ICON_GENERIC
-        r, g, b = TOTEM_COLOR_GENERIC[1], TOTEM_COLOR_GENERIC[2], TOTEM_COLOR_GENERIC[3]
+        local gr, gg, gb = _GenericColorRGB()
+        r, g, b = gr, gg, gb
+        isImportant, isImportantAura, duration, hasAura = false, false, nil, false
     else
-        icon, r, g, b = _ClassifyTotem(unit)
+        icon, r, g, b, isImportant, isImportantAura, duration, hasAura =
+            _ClassifyTotem(unit)
+        -- Psyfiend spawn-race: no channel yet but plate qualifies —
+        -- schedule a 250ms re-classify.  Only worth it when this
+        -- plate is actually a summon by classification (which it is
+        -- if we got past the earlier gates).
+        if not isImportant and not hasAura then
+            _SchedulePsyfiendRecheck(plate)
+        end
     end
 
     local frame = _GetTotemIcon(plate)
@@ -291,23 +699,30 @@ local function _ApplyTotemIcon(plate, unit, isFriend)
     -- pcall(function()...) closure per call.  RefreshAllLabels calls
     -- this per plate every 10 Hz — the previous closure was ~1 KB/sec
     -- of pure garbage in a full arena.
-    _totemIconApplyState.frame  = frame
-    _totemIconApplyState.uf     = uf
-    _totemIconApplyState.cfg    = cfg
-    _totemIconApplyState.icon   = icon
-    _totemIconApplyState.r      = r
-    _totemIconApplyState.g      = g
-    _totemIconApplyState.b      = b
+    local s = _totemIconApplyState
+    s.frame           = frame
+    s.uf              = uf
+    s.cfg             = cfg
+    s.icon            = icon
+    s.r               = r
+    s.g               = g
+    s.b               = b
+    s.isImportant     = isImportant
+    s.isImportantAura = isImportantAura
+    s.duration        = duration
+    s.hasAura         = hasAura
+    s.isFriend        = isFriend
+    s.plate           = plate
+    s.unit            = unit
     pcall(_ApplyTotemIconInner)
 end
 
 -- Public: clear the icon on a plate (called from Discovery.lua on
 -- NAME_PLATE_UNIT_REMOVED so recycled plate frames don't inherit the
--- previous unit's icon).
+-- previous unit's icon).  1.35.0: now also clears persistent HP/name
+-- markers so recycled plates don't stay recolored / hidden.
 function ns:ClearTotemIconForPlate(plate)
-    if plate and plate.MyNP_TotemIcon then
-        pcall(plate.MyNP_TotemIcon.Hide, plate.MyNP_TotemIcon)
-    end
+    _FullClearTotemState(plate)
 end
 
 ----------------------------------------------------------------------
@@ -1439,6 +1854,24 @@ end
 -- CompactUnitFrame_UpdateName (party/raid frames too), so we gate
 -- on `frame.unit:find("nameplate")` before doing nameplate work —
 -- exactly what BBP does at ConsolidatedUpdateName line 7054.
+-- 1.35.0: totem name recolor / hide-name post-processor.  Runs from
+-- inside _OnCompactUpdateName after we've verified this is a nameplate
+-- frame and past the secret / forbidden gates.  Reads persistent
+-- markers set by _ApplyTotemNameStyle so Blizzard's own name-update
+-- writes (target change, aggro change, faction flip) can't flash the
+-- plate name back to default color / restored text.
+local function _ApplyTotemNamePostHook(frame)
+    if not (frame and frame.name) then return end
+    if frame.MyNP_totemHideName then
+        pcall(frame.name.SetText, frame.name, "")
+        return
+    end
+    local mk = frame.MyNP_totemNameColor
+    if mk and mk[1] then
+        pcall(frame.name.SetVertexColor, frame.name, mk[1], mk[2], mk[3])
+    end
+end
+
 local function _OnCompactUpdateName(frame)
     if not frame then return end
     -- Hooked function fires inside Blizzard's secure execution; any
@@ -1492,9 +1925,49 @@ local function _OnCompactUpdateName(frame)
 
         _HookName(plate)
         _RepositionName(plate)
+
+        -- 1.35.0: totem name post-processing (color / hide-name).
+        -- Runs AFTER _RepositionName because that function calls
+        -- SetText with the cached summon name — we then need to
+        -- re-clear or recolor on top of that write.
+        _ApplyTotemNamePostHook(frame)
     end)
 end
 pcall(hooksecurefunc, "CompactUnitFrame_UpdateName", _OnCompactUpdateName)
+
+-- 1.35.0: CompactUnitFrame_UpdateHealthColor hook — BBP parity.
+-- Blizzard fires UpdateHealthColor on UNIT_HEALTH, target change,
+-- faction change, etc. and each call resets the healthbar to the
+-- default class color.  For classified totems we've stashed a
+-- persistent `uf.MyNP_totemColor = {r,g,b}` marker; if present we
+-- re-apply immediately after Blizzard's reset so the totem color is
+-- visible without waiting for the next 10 Hz refresh cycle.
+--
+-- SAFETY:
+--   * pcall the whole body — this fires inside secure execution, any
+--     leaked error propagates as taint (same rule as name hook).
+--   * Skip forbidden / secret frames.
+--   * Gate on the marker's presence — never touches non-totem plates.
+--   * Calling SetStatusBarColor here re-fires the SetStatusBarColor
+--     hook in Discovery.lua (friendlyColor override).  That hook is
+--     gated on UnitIsFriend and only rewrites friendly plates, so
+--     enemy totem plates (the primary use case) don't collide.
+--     For friendly totems, friendly color wins — see Discovery.lua's
+--     hook body for the co-existence check we add there.
+local function _OnCompactUpdateHealthColor(frame)
+    if not frame then return end
+    pcall(function()
+        if frame.IsForbidden and frame:IsForbidden() then return end
+        if issecretvalue and issecretvalue(frame) then return end
+        if not frame.healthBar then return end
+        local mk = frame.MyNP_totemColor
+        if not (mk and mk[1]) then return end
+        pcall(frame.healthBar.SetStatusBarColor, frame.healthBar,
+              mk[1], mk[2], mk[3])
+    end)
+end
+pcall(hooksecurefunc, "CompactUnitFrame_UpdateHealthColor",
+      _OnCompactUpdateHealthColor)
 
 ----------------------------------------------------------------------
 -- Spec apply.
