@@ -332,6 +332,8 @@ local TOTEM_INDICATOR_TOGGLES = {
       tip = "Hide the healthbar entirely except when the totem is your current target.  Matches BBP's totemIndicatorHideHealthBar." },
     { key = "hideName",            label = "Hide name",
       tip = "Blank out the name text on classified totem plates.  Matches BBP's totemIndicatorHideNameAndShiftIconDown." },
+    { key = "tintIcon",            label = "Tint icon (dim)",
+      tip = "Multiply the icon texture by the totem color.  Off (default) = icon shows its natural bright spellbook colors — the healthbar/name still get the totem color for classification cues.  On = strict BBP parity (dim brown wash for generic totems, magenta wash for important ones)." },
 }
 
 -- Reusable helper that emits the full BBP-parity block onto `parent`
@@ -416,6 +418,20 @@ local function BuildTotemIndicatorControls(parent, startY, options)
     end
     local togRows = math.ceil(#TOTEM_INDICATOR_TOGGLES / 2)
     y = togStartY - (togRows * ROW) - 6
+
+    -- 1.36.3: icon opacity slider.  Directly controls the alpha of
+    -- SetVertexColor on the icon texture — dial from 0.10 (nearly
+    -- transparent) to 1.00 (fully opaque, default).  Independent of
+    -- the tintIcon checkbox: opacity applies whether the icon is
+    -- rendered in natural colors or tinted.
+    local ICON_ALPHA_SLIDER = { key = "iconAlpha", label = "Icon Opacity",
+        tooltip = "How bright the icon appears.  1.00 = fully opaque (default).  Lower values fade the icon toward transparent — useful when the icon competes visually with the healthbar or the totem name.  Applies whether or not 'Tint icon' is on.",
+        min = 0.10, max = 1.00, step = 0.05, default = 1.00 }
+    local iconAlphaSlider = MakeSlider(parent, ICON_ALPHA_SLIDER,
+        function() local c = ns:GetLabelsConfig(labelKey); return c and (c.iconAlpha or 1.0) or 1.0 end,
+        function(v) ns:SetLabelOption(labelKey, "iconAlpha", v) end)
+    iconAlphaSlider:SetPoint("TOPLEFT", 8, y - 14)
+    y = y - 44
 
     -- Generic totem color picker (BBP totemIndicatorTotemColor).
     local gcLabel = MakeLabel(parent, "Generic totem color:", { 0.9, 0.9, 0.9 })

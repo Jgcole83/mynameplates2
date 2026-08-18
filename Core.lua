@@ -99,6 +99,24 @@ local function BuildDefaults()
                 iconAnchor     = "TOP",
                 iconXOffset    = 0,
                 iconYOffset    = 22,
+                -- 1.36.3: icon appearance controls.
+                --
+                -- tintIcon: BBP applies the totem color as a multiplicative
+                --   vertex-color tint on the icon texture — with a dark
+                --   generic color (brown 0.40, 0.34, 0.21) this darkens
+                --   every pixel to ~40% brightness and reads as a "faded
+                --   black" wash on the plate.  Default OFF so the icon
+                --   renders in its natural spellbook colors (bright and
+                --   readable); the healthbar / name still get the totem
+                --   color, so classification cues aren't lost.  Users who
+                --   want strict BBP parity can turn this back on.
+                --
+                -- iconAlpha: opacity multiplier on the icon texture.  1.0
+                --   = fully opaque (default), 0.10 = nearly transparent.
+                --   Useful when the icon is visually competing with the
+                --   healthbar or name text.
+                tintIcon             = false,
+                iconAlpha            = 1.0,
                 types = {
                     totem       = true,
                     psyfiend    = true,

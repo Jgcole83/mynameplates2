@@ -566,10 +566,26 @@ local function _ApplyTotemIconInner()
         return
     end
 
-    -- Icon texture + tint.
+    -- Icon texture + optional tint (1.36.3).
+    --
+    -- The default tint path multiplies every pixel of the icon by the
+    -- totem color — for the dark generic brown (0.40, 0.34, 0.21)
+    -- that produces a "faded black" wash that's hard to read.  The
+    -- new `tintIcon` toggle (default OFF) lets the icon render in its
+    -- natural spellbook colors while the healthbar / name still show
+    -- the totem color for classification cues.  `iconAlpha` (0.10 -
+    -- 1.00) is a straight opacity multiplier the user can dial for
+    -- fine visual control.  BBP-parity strict-tint behavior is one
+    -- checkbox click away for users who want it.
     if frame.tex then
         frame.tex:SetTexture(s.icon or TOTEM_ICON_GENERIC)
-        frame.tex:SetVertexColor(s.r, s.g, s.b, 1)
+        local ia = tonumber(cfg.iconAlpha) or 1.0
+        if ia < 0.10 then ia = 0.10 elseif ia > 1.0 then ia = 1.0 end
+        if cfg.tintIcon then
+            frame.tex:SetVertexColor(s.r, s.g, s.b, ia)
+        else
+            frame.tex:SetVertexColor(1, 1, 1, ia)
+        end
     end
 
     -- Cooldown swipe (BBP showTotemIndicatorCooldownSwipe).  Only
