@@ -67,6 +67,14 @@ ns.NPC_DATA = {
     [205495] = { name = "Storm Elemental (Primal)",    type = "guardian" },
     [15352]  = { name = "Earth Elemental",             type = "guardian" },
     [15438]  = { name = "Fire Elemental (legacy)",     type = "guardian" },
+    -- Enhancement Feral Spirit + Greater Storm Elemental from BBP
+    -- secondaryPets (BetterBlizzPlates/midnight/BetterBlizzPlates.lua:3374-3377).
+    -- Spirit Wolf is a proper "minion" per Blizzard's nameplate CVar
+    -- classification (nameplateShowFriendlyMinions); Greater Storm
+    -- Elemental is the Elemental spec 30s cooldown, filed alongside
+    -- our other elementals as a guardian.
+    [29264]  = { name = "Spirit Wolf",                 type = "minion"   },
+    [77936]  = { name = "Greater Storm Elemental",     type = "guardian" },
 
     -- ────────────────────────────────────────────────────────────────────
     -- PRIEST
@@ -131,6 +139,22 @@ ns.NPC_DATA = {
     [221012] = { name = "Charhound",                   type = "pet_warlock" },
     [4277]   = { name = "Eye of Kilrogg",              type = "pet_warlock" },
     [221001] = { name = "Inner Demon",                 type = "pet_warlock" },
+    -- Additional Warlock summon IDs seeded from BBP secondaryPets
+    -- (BetterBlizzPlates/midnight/BetterBlizzPlates.lua:3354-3369).
+    -- Covers Diabolist / Hellcaller / older Legion demons that our
+    -- curated list didn't have — auto-discovery would still catch
+    -- these on first sight, but pre-seeding avoids the one-time miss
+    -- and keeps them under the pet_warlock master tab.
+    [226268] = { name = "Gloomhound",                  type = "pet_warlock" },
+    [226269] = { name = "Charhound (alt)",             type = "pet_warlock" },
+    [136408] = { name = "Darkhound",                   type = "pet_warlock" },
+    [136398] = { name = "Illidari Satyr",              type = "pet_warlock" },
+    [136403] = { name = "Void Terror",                 type = "pet_warlock" },
+    [198757] = { name = "Void Lasher",                 type = "pet_warlock" },
+    [228574] = { name = "Pit Lord (Midnight)",         type = "pet_warlock" },
+    [228576] = { name = "Mother of Chaos",             type = "pet_warlock" },
+    [217429] = { name = "Overfiend",                   type = "pet_warlock" },
+    [225493] = { name = "Doomguard (Midnight)",        type = "pet_warlock" },
 
     -- ────────────────────────────────────────────────────────────────────
     -- DRUID
@@ -153,6 +177,15 @@ ns.NPC_DATA = {
     [163366] = { name = "Magus of the Dead",           type = "minion"   },
     [192337] = { name = "Abomination",                 type = "pet_dk"   },
     [171557] = { name = "Bloodworm",                   type = "minor"    },
+    -- Sanlayn Riders of the Apocalypse (San'layn hero tree).  Sourced
+    -- from BetterBlizzPlates/midnight/BetterBlizzPlates.lua:3346-3350.
+    -- Filed as "minion" to match Army-of-the-Dead siblings — they're
+    -- short-lived summons rather than the primary controllable ghoul.
+    [149555] = { name = "Raise Abomination",           type = "minion"   },
+    [221632] = { name = "Highlord Darion Mograine",    type = "minion"   },
+    [221633] = { name = "High Inquisitor Whitemane",   type = "minion"   },
+    [221634] = { name = "General Nazgrim",             type = "minion"   },
+    [221635] = { name = "King Thoras Trollbane",       type = "minion"   },
 
     -- ────────────────────────────────────────────────────────────────────
     -- MONK
@@ -173,6 +206,18 @@ ns.NPC_DATA = {
     -- default to pet_hunter so they land in the dedicated Hunter Pets tab.
     -- ────────────────────────────────────────────────────────────────────
     [165189] = { name = "Animal Companion (secondary)", type = "pet_hunter" },
+    -- Hunter secondary pets seeded from BBP secondaryPets
+    -- (BetterBlizzPlates/midnight/BetterBlizzPlates.lua:3387-3393).
+    -- Beast Mastery hero-tree summons + Beast Cleave companions.
+    -- Auto-discovery would default any pet-GUID unit to pet_hunter,
+    -- but seeding gives us the proper display name up front.
+    [62005]  = { name = "Beast",                       type = "pet_hunter" },
+    [105419] = { name = "Dire Basilisk",               type = "pet_hunter" },
+    [217228] = { name = "Blood Beast",                 type = "pet_hunter" },
+    [225190] = { name = "Dark Hound",                  type = "pet_hunter" },
+    [228224] = { name = "Fenryr",                      type = "pet_hunter" },
+    [228226] = { name = "Hati",                        type = "pet_hunter" },
+    [234018] = { name = "Bear Pack Leader",            type = "pet_hunter" },
 
     -- ────────────────────────────────────────────────────────────────────
     -- EVOKER

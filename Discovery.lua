@@ -55,6 +55,22 @@ local function _SafeName(unit)
     return v
 end
 
+-- Secret-safe boolean wrapper for BBP-pattern minion-shape detection
+-- (UnitIsMinion / UnitIsOtherPlayersPet / UnitIsUnit).  These APIs
+-- return booleans, which the retail Midnight 12.x forbidden-plate
+-- machinery generally leaves un-tagged — but wrap defensively so a
+-- future patch that changes that doesn't taint our execution context.
+-- pcall also catches the rare argument-validation errors some patches
+-- raise when handed a forbidden unit token.
+local function _SafeBool(fn, ...)
+    if not fn then return nil end
+    local ok, v = pcall(fn, ...)
+    if not ok then return nil end
+    if v == nil then return nil end
+    if issecretvalue and issecretvalue(v) then return nil end
+    return v and true or false
+end
+
 -- Robust name resolution that falls back to Blizzard's rendered text
 -- (uf.name:GetText) when UnitName returns secret or nil.  In retail
 -- Midnight 12.x BGs, UnitName(unit) for enemy plates returns secret
@@ -162,6 +178,21 @@ local function IsPlayerSummon(unit, guidKind, plate)
     -- plate threaded through so the name lookup can fall back to
     -- uf.name:GetText() when UnitName is anonymised.
     if _NpcDataType(unit, plate) then return true end
+    -- BBP-pattern UnitIsMinion fallback for anonymised summons in retail
+    -- Midnight 12.x arenas/BGs, where CreatureType, GUID, and NPC_DATA
+    -- reverse-lookup can all fail simultaneously.  UnitIsMinion returns
+    -- true for the entire class of stationary/summoned player-controlled
+    -- units (totems, army members, warlock minions), and its bool return
+    -- isn't gated on anonymisation — so it survives when every string
+    -- API returns secret.  Excludes the "real controllable pet" tokens
+    -- (pet, arenapet1..3, partypet1..3) because those flow through the
+    -- pet_* categories via the guidKind/UnitPlayerControlled paths above.
+    -- Source pattern: BetterBlizzPlates/midnight/modules/totem.lua:382.
+    if _SafeBool(UnitIsMinion, unit)
+       and not _SafeBool(UnitIsOtherPlayersPet, unit)
+       and not _SafeBool(UnitIsUnit, unit, "pet") then
+        return true
+    end
     return false
 end
 
@@ -174,6 +205,36 @@ local function AutoClassify(unit, guidKind, plate)
     -- UnitCreatureType / UnitClassification APIs in 12.x.
     local npcType = _NpcDataType(unit, plate)
     if npcType then return npcType end
+
+    -- BBP-pattern minion-shape signal.  Used twice below: once as a
+    -- strong classifier when combined with cast/channel state (cheap
+    -- and unambiguous: only totems channel Psyfiend / cast Capacitor
+    -- in the anonymised-plate case), and once at the bottom as the
+    -- default "we couldn't identify this but it's clearly a summon"
+    -- catch-all — see comments there.
+    -- Source pattern: BetterBlizzPlates/midnight/modules/totem.lua:382
+    local isMinionShape = _SafeBool(UnitIsMinion, unit)
+                          and not _SafeBool(UnitIsOtherPlayersPet, unit)
+                          and not _SafeBool(UnitIsUnit, unit, "pet")
+
+    -- BBP-pattern cast/channel signals.  On anonymised 12.x plates
+    -- UnitCastingInfo / UnitChannelInfo still return real data
+    -- because Blizzard's cast API isn't gated on the same
+    -- anonymisation flag as UnitCreatureType / UnitGUID.  BBP
+    -- (midnight/modules/totem.lua:457-459) uses these as the primary
+    -- signal for Capacitor Totem (cast) and Psyfiend (channel).
+    -- Guard the returns because a channelName / castName string could
+    -- itself be secret on a future patch that tightens anonymisation.
+    if isMinionShape then
+        local okC, chan = pcall(UnitChannelInfo, unit)
+        if okC and chan and not (issecretvalue and issecretvalue(chan)) then
+            return "psyfiend"
+        end
+        local okK, cast = pcall(UnitCastingInfo, unit)
+        if okK and cast and not (issecretvalue and issecretvalue(cast)) then
+            return "totem"
+        end
+    end
 
     -- Two-stage classification:
     --   1. HP-only filters at the extremes (definitely minor / definitely big)
@@ -207,20 +268,33 @@ local function AutoClassify(unit, guidKind, plate)
 
     if guidKind == "Pet" then return "pet" end
 
-    -- NOTHING readable.  In retail Midnight 12.x BG/arena every
-    -- identity field on enemy summon plates (CreatureType, GUID,
-    -- HP, name) is secret-tagged until the player interacts.  We
-    -- USED to default to "minion" here, which then catID-routed
-    -- the plate into `enemyMinions` — and if the user had that
-    -- category's alpha slider at 0 (a common "hide minion clutter"
-    -- setting) the totem's UnitFrame was forced to alpha=0 and
-    -- the health bar vanished.  The fix is to return nil instead:
-    -- the caller (ClassifyPlate) then falls through to the
-    -- generic `enemyPlayers` bucket, ApplyOverrides bails on the
-    -- "no cat" path, and Blizzard's default render runs untouched.
-    -- When the user mouseovers / targets the unit, the non-secret
-    -- "target"/"mouseover" token lets us classify correctly and
-    -- _CaptureSummonFromToken re-runs Manage with the real type.
+    -- BBP-pattern default: an anonymised minion-shaped unit is almost
+    -- always a totem in retail Midnight 12.x arena/BG.  Blizzard
+    -- anonymises Grounding / Capacitor / Psyfiend / Tremor / Static
+    -- Field aggressively (they're the plates that most reward
+    -- interrupt-cheating), so when every other signal is secret but
+    -- UnitIsMinion still says "yes, this is a stationary summon",
+    -- default to totem to match BBP's assumption at:
+    --   BetterBlizzPlates/midnight/modules/totem.lua:382
+    --
+    -- Historical note: we used to default to "minion" here (before
+    -- 1.36.0), which was worse — many users zero the "Enemy Minions"
+    -- alpha slider to hide Warlock imp clutter, and that setting was
+    -- accidentally hiding real totems.  Routing to the totems bucket
+    -- instead means the user's "Enemy Totems" slider is what governs
+    -- these plates, which is closer to the intent (arena totems ARE
+    -- exactly what that slider is for).  The user can still target-
+    -- click any misclassified plate; _CaptureSummonFromToken re-
+    -- routes it into its real category on the next TARGET_CHANGED
+    -- event using the non-secret target token.
+    if isMinionShape then return "totem" end
+
+    -- NOTHING readable AND not minion-shaped.  Return nil so the
+    -- caller (ClassifyPlate) falls through to the generic
+    -- `enemyPlayers` bucket, ApplyOverrides bails on the "no cat"
+    -- path, and Blizzard's default render runs untouched.  When the
+    -- user mouseovers / targets the unit, _CaptureSummonFromToken
+    -- re-runs Manage with the real type from the non-secret token.
     return nil
 end
 
