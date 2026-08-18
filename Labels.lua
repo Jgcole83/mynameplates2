@@ -732,14 +732,33 @@ _ApplyTotemIcon = function(plate, unit, isFriend)
     local L   = MyNamePlatesDB and MyNamePlatesDB.labels
     local cfg = L and L.petTotemName
 
-    if not (cfg and cfg.enabled == "1" and cfg.showIcon) then
-        return _FullClearTotemState(plate)
+    -- 1.36.2: test-mode bypasses `enabled` and `showIcon` so the Test
+    -- Totems button on the UI works even when the user has the block
+    -- switched off in their DB.  Without this, clicking Test on a
+    -- fresh install with enabled="0" would produce no visible change
+    -- and look broken.  The gate is checked once here and re-used
+    -- below to skip the per-type filter and friend gates too.
+    local testing = ns.testMode and ns.testMode.petTotemName
+    if not testing then
+        if not (cfg and cfg.enabled == "1" and cfg.showIcon) then
+            return _FullClearTotemState(plate)
+        end
+    else
+        -- Test mode still needs a cfg table (we read iconSize / anchor
+        -- / offsets / colors from it).  Every path below assumes cfg
+        -- exists, so if the block was never merged into the DB for
+        -- some reason (shouldn't happen with the defaults merger, but
+        -- be defensive), bail rather than nil-deref.
+        if not cfg then return _FullClearTotemState(plate) end
     end
 
     -- Per-summon-type filter — same table used by the name overlay.
     local st = _TotemIconType(plate, unit)
     if not st then return _FullClearTotemState(plate) end
-    if cfg.types and cfg.types[st] == false then
+    -- Skip the per-type filter when testing so target dummies (which
+    -- classify as "totem" in test mode via _TotemIconType) render
+    -- regardless of whether the user has the totem type checkbox on.
+    if (not testing) and cfg.types and cfg.types[st] == false then
         return _FullClearTotemState(plate)
     end
 
@@ -754,12 +773,17 @@ _ApplyTotemIcon = function(plate, unit, isFriend)
             isFriend = ok and f or false
         end
     end
-    if isFriend and not cfg.applyFriendly then return _FullClearTotemState(plate) end
-    if (not isFriend) and not cfg.applyEnemy then return _FullClearTotemState(plate) end
+    -- Skip applyFriendly / applyEnemy / enemiesOnly gates in test mode
+    -- so target dummies work regardless of faction (friendly training
+    -- dummies in capital cities AND hostile ones both work).
+    if not testing then
+        if isFriend and not cfg.applyFriendly then return _FullClearTotemState(plate) end
+        if (not isFriend) and not cfg.applyEnemy then return _FullClearTotemState(plate) end
 
-    -- 1.35.0: enemies-only gate (BBP totemIndicatorEnemyOnly).
-    if cfg.enemiesOnly and isFriend then
-        return _FullClearTotemState(plate)
+        -- 1.35.0: enemies-only gate (BBP totemIndicatorEnemyOnly).
+        if cfg.enemiesOnly and isFriend then
+            return _FullClearTotemState(plate)
+        end
     end
 
     -- Skip the classifier entirely on secret unit tokens (Unit*Info calls

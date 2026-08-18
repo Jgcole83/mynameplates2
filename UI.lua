@@ -351,6 +351,46 @@ local function BuildTotemIndicatorControls(parent, startY, options)
         options.heading or "Totem indicator (BBP parity):",
         { 1.0, 0.85, 0.3 })
     behavHeading:SetPoint("TOPLEFT", 8, y - 4)
+
+    -- 1.36.2: dedicated Test button at the block heading.  Toggles the
+    -- same ns.testMode.petTotemName state as the block-level Test on
+    -- Labels → Pet & Totem Name, so all three instances stay in sync.
+    -- When ON, _TotemIconType returns "totem" for every visible plate
+    -- (see Labels.lua) — a target dummy, an enemy player, an ambient
+    -- critter, whatever's on your screen renders the totem indicator
+    -- with the current icon size / anchor / offset / color settings.
+    -- Purpose: tune icon size on the fly against a target dummy in the
+    -- world without needing to sit in an arena waiting for a totem
+    -- to spawn.  State is NOT persisted — cleared on /reload.
+    local testBtn = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
+    testBtn:SetSize(100, 22)
+    testBtn:SetPoint("TOPRIGHT", parent, "TOPRIGHT", -8, y - 2)
+    local function refreshTestText()
+        testBtn:SetText(ns.testMode and ns.testMode.petTotemName
+                        and "Stop Test" or "Test Totems")
+    end
+    refreshTestText()
+    testBtn:SetScript("OnClick", function()
+        if not ns.testMode then return end
+        if not ns.testMode.petTotemName then
+            -- Coordinate with the two name test-modes on the Labels tab
+            -- (they're mutually exclusive with petTotemName per the
+            -- BuildLabelBlock Test-button logic).  If the user had
+            -- either name test on, turn it off first so the two states
+            -- don't produce the "one button still says Stop Test"
+            -- confusion the block-level test callback already avoids.
+            ns.testMode.name         = false
+            ns.testMode.petTotemName = true
+        else
+            ns.testMode.petTotemName = false
+        end
+        refreshTestText()
+        if ns.RefreshAllLabels then ns:RefreshAllLabels() end
+    end)
+    AttachTooltip(testBtn, "Test totem indicator",
+        "Force the totem icon + color onto every visible nameplate so you can tune icon size / anchor / offsets / color live in the open world (target dummies work great).  Click again to revert.  Not saved to disk — cleared on /reload.")
+    table.insert(refreshHooks, refreshTestText)
+
     y = y - ROW
 
     local behavNote = MakeLabel(parent,
