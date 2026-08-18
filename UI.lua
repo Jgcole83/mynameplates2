@@ -433,6 +433,25 @@ local function BuildTotemIndicatorControls(parent, startY, options)
     iconAlphaSlider:SetPoint("TOPLEFT", 8, y - 14)
     y = y - 44
 
+    -- 1.36.4: healthbar opacity slider.  Independent of the plate-
+    -- level opacity (Enemy Totems tab → Opacity slider) — this
+    -- controls JUST the totem's healthbar container.  Uses the same
+    -- 3-layer stickiness as the color path: persistent marker on the
+    -- uf (MyNP_totemHbAlpha) + Discovery SetAlpha reassert hook +
+    -- 10 Hz RefreshAllLabels tick.  Interacts with "Hide HP bar":
+    -- when hideHealthBar is on and the totem is NOT the current
+    -- target, alpha is forced to 0; otherwise this slider's value
+    -- applies.  0.00 = fully transparent, 1.00 = fully opaque
+    -- (default; leaves the healthbar untouched).
+    local HB_ALPHA_SLIDER = { key = "healthBarAlpha", label = "HP Bar Opacity",
+        tooltip = "How opaque the totem's healthbar appears.  1.00 = fully opaque (default; leaves Blizzard's normal alpha alone).  0.00 = fully transparent.  Combines multiplicatively with the plate-level opacity on the Enemy Totems tab.  When 'Hide HP bar' is on, this value only applies while the totem is your current target.",
+        min = 0.00, max = 1.00, step = 0.05, default = 1.00 }
+    local hbAlphaSlider = MakeSlider(parent, HB_ALPHA_SLIDER,
+        function() local c = ns:GetLabelsConfig(labelKey); return c and (c.healthBarAlpha or 1.0) or 1.0 end,
+        function(v) ns:SetLabelOption(labelKey, "healthBarAlpha", v) end)
+    hbAlphaSlider:SetPoint("TOPLEFT", 8, y - 14)
+    y = y - 44
+
     -- Generic totem color picker (BBP totemIndicatorTotemColor).
     local gcLabel = MakeLabel(parent, "Generic totem color:", { 0.9, 0.9, 0.9 })
     gcLabel:SetPoint("TOPLEFT", 8, y - 4)

@@ -491,47 +491,93 @@ local function _ApplyTotemNameStyle(uf, cfg, isImportant, isImportantAura,
     end
 end
 
--- Apply healthbar-hide gate (BBP totemIndicatorHideHealthBar).  Fades
--- the HealthBarsContainer and the selection highlight when the totem
--- is NOT the current target — targeted totems stay visible so the
--- user can see health while they burn it down.
-local function _ApplyTotemHideHealthBar(uf, cfg, unit)
+-- Clamp a user-configurable alpha to [0, 1].  Falls back to 1.0 for
+-- non-numeric input.  Reused for healthBarAlpha and any future
+-- alpha-slider settings on the totem indicator block.
+local function _ClampAlpha(v, default)
+    v = tonumber(v)
+    if not v then return default or 1.0 end
+    if v < 0 then return 0 end
+    if v > 1 then return 1 end
+    return v
+end
+
+-- Apply healthbar opacity for a classified totem.  Combines TWO
+-- settings into a single effective alpha:
+--
+--   * cfg.healthBarAlpha (0.0-1.0)  — user's base opacity for every
+--                                     totem healthbar.  Default 1.0.
+--   * cfg.hideHealthBar (bool)      — when on, forces alpha to 0
+--                                     whenever the totem is NOT the
+--                                     current target (BBP behavior);
+--                                     targeted totems still use the
+--                                     base opacity so the user can
+--                                     see HP while burning them down.
+--
+-- Stores the effective alpha on uf.MyNP_totemHbAlpha so the Discovery
+-- SetAlpha reassert hook (v1.36.4) can re-apply it after Blizzard's
+-- own writes.  Without that hook, Blizzard's plate-fade / target-swap
+-- alpha writes on the container would fight our 10 Hz reassert and
+-- produce visible flicker.  Marker is cleared entirely (nil) when we
+-- decide NOT to manage the alpha (both settings default) so recycled
+-- plates don't inherit a previous totem's opacity state.
+--
+-- Selection highlight is driven from the same effective alpha so the
+-- target-outline glow visibility follows the healthbar visibility.
+local function _ApplyTotemHealthBarOpacity(uf, cfg, unit)
     -- Container lookup is defensive — different Blizzard nameplate
     -- templates use different names, and forbidden plates would throw.
     local hbc = uf.HealthBarsContainer or uf.healthBar
     if not hbc then return end
-    if not cfg.hideHealthBar then
-        -- Turn off — restore alpha if we previously zeroed it.
-        if uf.MyNP_totemHidHealth then
+
+    local base = _ClampAlpha(cfg.healthBarAlpha, 1.0)
+    local hide = cfg.hideHealthBar and true or false
+
+    -- Fast path: user hasn't opted into either behavior — clear any
+    -- previous marker so Blizzard's own alpha runs freely, and pop
+    -- the container back to 1 if we previously zeroed / dimmed it.
+    if base >= 0.999 and not hide then
+        if uf.MyNP_totemHbAlpha ~= nil then
             pcall(hbc.SetAlpha, hbc, 1)
             if uf.selectionHighlight then
                 pcall(uf.selectionHighlight.SetAlpha, uf.selectionHighlight, 1)
             end
-            uf.MyNP_totemHidHealth = nil
+            uf.MyNP_totemHbAlpha = nil
         end
+        -- Legacy marker (pre-1.36.4) — clear on the same path so any
+        -- users upgrading from 1.35 don't get stuck with a stale flag.
+        uf.MyNP_totemHidHealth = nil
         return
     end
+
     -- Determine target-ness safely.  On secret arena tokens we can't
     -- call UnitIsUnit without tainting; assume "not the target" in
-    -- that case (the safe default is HIDE, which is the whole point
-    -- of the setting anyway).
+    -- that case (safe default — hides / dims the plate).
     local isTarget = false
     if unit and not (issecretvalue and issecretvalue(unit)) then
         local ok, v = pcall(UnitIsUnit, unit, "target")
         if ok then isTarget = v and true or false end
     end
-    if isTarget then
-        pcall(hbc.SetAlpha, hbc, 1)
-        if uf.selectionHighlight then
-            pcall(uf.selectionHighlight.SetAlpha, uf.selectionHighlight, 0.22)
-        end
+
+    -- Effective alpha (write once, persist for the reassert hook).
+    local eff
+    if hide and not isTarget then
+        eff = 0
     else
-        pcall(hbc.SetAlpha, hbc, 0)
-        if uf.selectionHighlight then
-            pcall(uf.selectionHighlight.SetAlpha, uf.selectionHighlight, 0)
-        end
+        eff = base
     end
-    uf.MyNP_totemHidHealth = true
+    uf.MyNP_totemHbAlpha = eff
+    -- Legacy flag kept in-sync for anyone reading it externally.
+    uf.MyNP_totemHidHealth = (eff < 0.999) and true or nil
+
+    pcall(hbc.SetAlpha, hbc, eff)
+    if uf.selectionHighlight then
+        -- Match BBP: targeted totems get a dim outline (0.22), non-
+        -- targeted ones follow the effective alpha directly so the
+        -- highlight doesn't linger over a hidden healthbar.
+        local hi = (hide and not isTarget) and 0 or (isTarget and 0.22 or eff)
+        pcall(uf.selectionHighlight.SetAlpha, uf.selectionHighlight, hi)
+    end
 end
 
 local function _ApplyTotemIconInner()
@@ -664,7 +710,7 @@ local function _ApplyTotemIconInner()
                            s.hasAura, s.r, s.g, s.b)
     _ApplyTotemNameStyle(uf, cfg, s.isImportant, s.isImportantAura,
                          s.hasAura, s.r, s.g, s.b)
-    _ApplyTotemHideHealthBar(uf, cfg, s.unit)
+    _ApplyTotemHealthBarOpacity(uf, cfg, s.unit)
 end
 
 -- Clear only the visual overlays (glow / cd / anim) without touching
@@ -697,14 +743,18 @@ local function _FullClearTotemState(plate)
     uf.MyNP_totemColor     = nil
     uf.MyNP_totemNameColor = nil
     uf.MyNP_totemHideName  = nil
-    -- If we hid the healthbar, restore alpha before dropping the
-    -- flag — otherwise the recycled plate stays invisible.
-    if uf.MyNP_totemHidHealth then
+    -- If we dimmed / hid the healthbar, restore alpha before dropping
+    -- the markers — otherwise the recycled plate stays invisible / dim.
+    -- Checks BOTH the 1.36.4 marker (MyNP_totemHbAlpha) AND the legacy
+    -- 1.35.x flag (MyNP_totemHidHealth) so upgraded users don't have
+    -- stuck plates from a stale flag.
+    if uf.MyNP_totemHbAlpha ~= nil or uf.MyNP_totemHidHealth then
         local hbc = uf.HealthBarsContainer or uf.healthBar
         if hbc then pcall(hbc.SetAlpha, hbc, 1) end
         if uf.selectionHighlight then
             pcall(uf.selectionHighlight.SetAlpha, uf.selectionHighlight, 1)
         end
+        uf.MyNP_totemHbAlpha   = nil
         uf.MyNP_totemHidHealth = nil
     end
 end

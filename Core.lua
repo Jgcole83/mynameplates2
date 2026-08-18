@@ -117,6 +117,20 @@ local function BuildDefaults()
                 --   healthbar or name text.
                 tintIcon             = false,
                 iconAlpha            = 1.0,
+
+                -- 1.36.4: healthbar opacity.  Applied to the totem's
+                -- HealthBarsContainer alpha via a persistent marker
+                -- (uf.MyNP_totemHbAlpha) that our Discovery SetAlpha
+                -- reassert hook re-applies whenever Blizzard writes a
+                -- different value.  Multiplies with the category-level
+                -- plate alpha (Enemy Totems opacity slider) — set both
+                -- to 0.5 and you get 25% effective opacity.  Set this
+                -- to 1.0 (default) to leave the healthbar untouched.
+                -- Interacts with hideHealthBar: when hideHealthBar is
+                -- on AND the totem is NOT the current target, the
+                -- healthbar is hidden entirely (alpha=0) regardless of
+                -- this setting; otherwise this value applies.
+                healthBarAlpha       = 1.0,
                 types = {
                     totem       = true,
                     psyfiend    = true,

@@ -630,6 +630,47 @@ local function HookUnitFrame(plate)
                 end)
             end)
     end
+
+    -- 1.36.4: healthbar-container alpha reassert.
+    --
+    -- Blizzard drives the HealthBarsContainer's alpha on plate-fade,
+    -- target-swap, aggro-flip, out-of-range fade, and every other
+    -- built-in visibility state.  Without a reassert hook, our
+    -- Labels._ApplyTotemHealthBarOpacity write (10 Hz) fights every
+    -- Blizzard write in between and the user sees flicker.  Same
+    -- design as the SetStatusBarColor hook above:
+    --   * Marker-gated: only re-applies when Labels has stashed
+    --     uf.MyNP_totemHbAlpha — non-totem plates run their normal
+    --     Blizzard alpha path untouched.
+    --   * Approx-equal bailout: if Blizzard already wrote our target
+    --     value (or effectively did), we skip — prevents the hook
+    --     from re-entering itself on our own SetAlpha calls.
+    --   * pcall-wrapped: hook fires inside secure execution; any
+    --     leaked error propagates as taint.  Same rule as the color
+    --     hook — errors here bring the addon down in arenas.
+    -- Hook target is BOTH the HealthBarsContainer AND the healthBar,
+    -- because different Blizzard nameplate templates expose either
+    -- one as the alpha-driven parent, and Labels picks whichever it
+    -- finds first.  Guarding with .MyNP_alphaHooked prevents double-
+    -- installation when both fields resolve to the same frame.
+    local function _reassertAlpha(self, a)
+        pcall(function()
+            local want = uf.MyNP_totemHbAlpha
+            if want == nil then return end
+            if a and math.abs(a - want) < 0.01 then return end
+            self:SetAlpha(want)
+        end)
+    end
+
+    local hbc = uf.HealthBarsContainer
+    if hbc and not hbc.MyNP_alphaHooked then
+        hbc.MyNP_alphaHooked = true
+        pcall(hooksecurefunc, hbc, "SetAlpha", _reassertAlpha)
+    end
+    if hb and not hb.MyNP_alphaHooked then
+        hb.MyNP_alphaHooked = true
+        pcall(hooksecurefunc, hb, "SetAlpha", _reassertAlpha)
+    end
 end
 
 local function ResetPlate(plate)
