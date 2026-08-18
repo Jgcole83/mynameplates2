@@ -1268,10 +1268,10 @@ local function BuildLabelBlock(parent, startY, key, headingLabel, defaultY)
         y = y - ROW
 
         local ICON_SIZE_SLIDER = { key = "iconSize", label = "Icon Size",
-            tooltip = "Icon dimensions in pixels.  26 matches BBP's default.",
-            min = 12, max = 64, step = 1, default = 26 }
+            tooltip = "Icon dimensions in pixels.  30 matches BBP's fixed size.",
+            min = 12, max = 64, step = 1, default = 30 }
         local iconSizeSlider = MakeSlider(parent, ICON_SIZE_SLIDER,
-            function() local c = ns:GetLabelsConfig(key); return c and (c.iconSize or 26) or 26 end,
+            function() local c = ns:GetLabelsConfig(key); return c and (c.iconSize or 30) or 30 end,
             function(v) ns:SetLabelOption(key, "iconSize", v) end)
         iconSizeSlider:SetPoint("TOPLEFT", 8, y - 14)
         y = y - 44

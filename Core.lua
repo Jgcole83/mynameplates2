@@ -95,7 +95,7 @@ local function BuildDefaults()
                 --   * Otherwise → generic totem-recall icon (brown)
                 -- Defaults ON — the whole point is arena visibility.
                 showIcon       = true,
-                iconSize       = 26,
+                iconSize       = 30,          -- BBP parity (their fixed size)
                 iconAnchor     = "TOP",
                 iconXOffset    = 0,
                 iconYOffset    = 22,
@@ -484,6 +484,9 @@ f:RegisterEvent("PLAYER_ENTERING_WORLD")
 f:RegisterEvent("PLAYER_REGEN_ENABLED")
 -- Bump this when the auto-classification logic changes meaningfully so that
 -- stale `discovered` entries get wiped and re-classified on next plate spawn.
+-- 1.36.1 note: NpcData entries gained optional spellID + important fields
+-- but the auto-classification algorithm didn't change, so this stays at 7.
+-- User-added `/mnp add` entries and auto-discovered records are preserved.
 local CLASSIFIER_VERSION = 7
 
 f:SetScript("OnEvent", function(_, event, arg1)
@@ -493,6 +496,23 @@ f:SetScript("OnEvent", function(_, event, arg1)
         if MyNamePlatesDB.classifierVersion ~= CLASSIFIER_VERSION then
             MyNamePlatesDB.npcs = {}
             MyNamePlatesDB.classifierVersion = CLASSIFIER_VERSION
+        end
+
+        -- 1.36.1 one-shot migration: bump users who still have the old
+        -- iconSize = 26 default up to the new 30 (BBP parity).  Users
+        -- who explicitly chose 26 in 1.35.x lose that choice here — the
+        -- assumption is that anyone who set it to exactly 26 either
+        -- accepted the old default or wanted BBP parity anyway.  Any
+        -- other value (28, 34, 40, ...) is treated as an intentional
+        -- pick and preserved.  Guarded by a version flag so this
+        -- migration runs exactly once per DB.
+        if not MyNamePlatesDB._iconSize30Applied then
+            local L = MyNamePlatesDB.labels
+            local pt = L and L.petTotemName
+            if pt and tonumber(pt.iconSize) == 26 then
+                pt.iconSize = 30
+            end
+            MyNamePlatesDB._iconSize30Applied = true
         end
     elseif event == "PLAYER_LOGIN" then
         ns:ApplyAll()

@@ -116,24 +116,113 @@ local function _GenericColorRGB()
     return TOTEM_COLOR_GENERIC[1], TOTEM_COLOR_GENERIC[2], TOTEM_COLOR_GENERIC[3]
 end
 
--- Classify a totem-plate's visual treatment using ONLY APIs that
--- survive Midnight 12.x anonymisation on nameplate unit tokens.
--- UnitCastingInfo / UnitChannelInfo / C_UnitAuras.GetUnitAuras are
--- proven safe on secret nameplate tokens per BBP's shipping code.
+-- Resolve the npcID for a plate/unit pair.  Consults, in priority order:
+--   1. The Discovery-managed active[] entry (populated at
+--      NAME_PLATE_UNIT_ADDED with the fresh GUID split).
+--   2. The per-plate summon capture cache (populated at
+--      PLAYER_TARGET_CHANGED / UPDATE_MOUSEOVER_UNIT from the non-secret
+--      target/mouseover token).
+--   3. A direct UnitGUID re-parse, secret-safe.
+-- Returns nil when every path fails (fully anonymised plate).  Called
+-- from _ClassifyTotem below to promote NPC_DATA-driven icon + importance
+-- above the cast/channel/aura heuristics.
+local function _ResolvePlateNpcID(plate, unit)
+    if plate and ns.GetSummonNpcIDByPlate then
+        local n = ns:GetSummonNpcIDByPlate(plate)
+        if n then return n end
+    end
+    if unit then
+        if not (issecretvalue and issecretvalue(unit)) then
+            if ns.GetSummonInfoForUnit then
+                local info = ns:GetSummonInfoForUnit(unit)
+                if info and info.npcID then return info.npcID end
+            end
+            local okG, guid = pcall(UnitGUID, unit)
+            if okG and guid and not (issecretvalue and issecretvalue(guid)) then
+                local k, _, _, _, _, n = strsplit("-", guid)
+                if k and not (issecretvalue and issecretvalue(k))
+                   and (k == "Creature" or k == "Pet" or k == "Vehicle") then
+                    return tonumber(n)
+                end
+            end
+        end
+    end
+    return nil
+end
+
+-- Look up the curated record for an npcID.  Prefers the live user-
+-- editable table (MyNamePlatesDB.npcs) so runtime `/mnp add` and
+-- auto-discovery writes take effect immediately, falls back to the
+-- shipped NPC_DATA table.  Guards against secret-tagged fields on
+-- the record (unlikely but cheap to enforce).
+local function _NpcRecord(npcID)
+    if not npcID then return nil end
+    local rec
+    if MyNamePlatesDB and MyNamePlatesDB.npcs and MyNamePlatesDB.npcs[npcID] then
+        rec = MyNamePlatesDB.npcs[npcID]
+    elseif ns.NPC_DATA and ns.NPC_DATA[npcID] then
+        rec = ns.NPC_DATA[npcID]
+    end
+    return rec
+end
+
+-- Classify a totem-plate's visual treatment.  Priority order (highest
+-- confidence first):
 --
--- 1.34.1: returns multiple values (icon, r, g, b) instead of a fresh
--- table per call to eliminate ~20 tables/sec of garbage during refresh.
+--   1. NPC_DATA record for the plate's npcID (v1.36.1).  When we know
+--      exactly which totem this is (Grounding, Tremor, Healing Tide,
+--      etc.), use its canonical spellID for the icon and honour the
+--      curated `important = true` flag for arena-critical totems.  This
+--      is the "matches the right totem" path — Grounding shows the
+--      Grounding icon in magenta, Tremor shows the Tremor icon in
+--      magenta, etc.
+--   2. UnitChannelInfo → Psyfiend (BBP pattern for anonymised plates
+--      where npcID is unresolvable but channel state is still visible).
+--   3. UnitCastingInfo → Capacitor Totem (same rationale).
+--   4. First HELPFUL aura icon (fallback for un-curated totems).
+--   5. Generic totem icon + generic color.
 --
--- 1.35.0: full BBP-parity signature — returns:
---   icon, r, g, b, isImportant, isImportantAura, duration, hasAura
--- so the caller (_ApplyTotemIcon) can drive glow / cooldown swipe /
--- animation / colorization gates the same way BBP's
--- ApplyTotemIconsAndColorNameplate does.  Priority ORDER also swapped
--- to match BBP: channel-first (Psyfiend), then cast (Capacitor), then
--- aura, then generic.  Old order (cast first) worked in practice
--- because no totem both casts and channels, but matching BBP exactly
--- future-proofs against odd edge cases and keeps intent obvious.
-local function _ClassifyTotem(unit)
+-- Signature returns (icon, r, g, b, isImportant, isImportantAura,
+-- duration, hasAura) — same shape as before so the caller
+-- (_ApplyTotemIcon) doesn't need signature changes.
+--
+-- The plate argument is used only to resolve npcID; classification
+-- still works if plate is nil (older call sites) but skips path #1.
+local function _ClassifyTotem(unit, plate)
+    -- Priority 1: NPC_DATA-driven classification.  Runs first so a
+    -- known totem always renders with its canonical icon regardless
+    -- of what cast/channel state Blizzard reports at this instant
+    -- (a Grounding Totem doesn't cast or channel, but we still want
+    -- to render the Grounding icon + magenta color, not fall through
+    -- to the "first helpful aura" path which can pick the wrong
+    -- passive buff icon).
+    local npcID = _ResolvePlateNpcID(plate, unit)
+    if npcID then
+        local rec = _NpcRecord(npcID)
+        if rec then
+            local icon
+            if rec.spellID and C_Spell and C_Spell.GetSpellTexture then
+                local okI, tex = pcall(C_Spell.GetSpellTexture, rec.spellID)
+                if okI and tex and not (issecretvalue and issecretvalue(tex)) then
+                    icon = tex
+                end
+            end
+            -- rec.icon = explicit texture path override (rare; used for
+            -- totems where a spellID-derived icon doesn't exist or
+            -- looks wrong).
+            if not icon and rec.icon then icon = rec.icon end
+            if icon then
+                if rec.important then
+                    return icon,
+                           TOTEM_COLOR_IMPORTANT[1], TOTEM_COLOR_IMPORTANT[2], TOTEM_COLOR_IMPORTANT[3],
+                           true, false, nil, false
+                end
+                local gr, gg, gb = _GenericColorRGB()
+                return icon, gr, gg, gb, false, false, nil, false
+            end
+        end
+    end
+
     if not unit then
         local gr, gg, gb = _GenericColorRGB()
         return TOTEM_ICON_GENERIC, gr, gg, gb, false, false, nil, false
@@ -452,7 +541,10 @@ local function _ApplyTotemIconInner()
 
     -- Position + size (kept configurable per user's choice — BBP uses
     -- a fixed 30x30, we let the user tune via iconSize slider).
-    local size = tonumber(cfg.iconSize) or 26
+    -- 1.36.1: bumped fallback 26 -> 30 for BBP parity with the shipped
+    -- default in Core.lua and the UI slider default in UI.lua.  Users
+    -- who explicitly set a value keep whatever they configured.
+    local size = tonumber(cfg.iconSize) or 30
     frame:SetSize(size, size)
     frame:ClearAllPoints()
     local anchor = uf.healthBar or uf
@@ -681,8 +773,13 @@ _ApplyTotemIcon = function(plate, unit, isFriend)
         r, g, b = gr, gg, gb
         isImportant, isImportantAura, duration, hasAura = false, false, nil, false
     else
+        -- 1.36.1: pass plate so _ClassifyTotem can consult NPC_DATA via
+        -- _ResolvePlateNpcID.  When we know the npcID, we render the
+        -- canonical icon (Grounding icon on Grounding Totem, etc.) and
+        -- honour the curated `important` flag instead of guessing via
+        -- cast/channel/aura state.
         icon, r, g, b, isImportant, isImportantAura, duration, hasAura =
-            _ClassifyTotem(unit)
+            _ClassifyTotem(unit, plate)
         -- Psyfiend spawn-race: no channel yet but plate qualifies —
         -- schedule a 250ms re-classify.  Only worth it when this
         -- plate is actually a summon by classification (which it is

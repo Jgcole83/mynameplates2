@@ -749,6 +749,18 @@ function ns:GetSummonNameByPlate(plate)
     return v and v.name or nil
 end
 
+-- 1.36.1: exposes the npcID stashed on the plate cache at classification
+-- time.  Labels._ClassifyTotem consults this to look up canonical icon /
+-- important flag in NPC_DATA before falling back to cast/channel/aura
+-- heuristics.  Returns nil when the plate has no cached record OR the
+-- record was created without a resolvable npcID (secret GUID at capture
+-- time).  Same shape guarantee as GetSummonTypeByPlate — pure read, no
+-- side effects, never touches secret values.
+function ns:GetSummonNpcIDByPlate(plate)
+    local v = plate and _summonByPlate[plate]
+    return v and v.npcID or nil
+end
+
 function ns:ClearSummonTypeByPlate(plate)
     if plate then _summonByPlate[plate] = nil end
 end

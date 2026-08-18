@@ -3,14 +3,37 @@
 -- Auto-discovery (Discovery.lua) adds anything missing the moment you encounter it.
 --
 -- Schema:
---   ns.NPC_DATA[npcID] = { name = "...", type = "totem|guardian|minion|minor|pet" }
+--   ns.NPC_DATA[npcID] = {
+--       name      = "...",
+--       type      = "totem|psyfiend|guardian|minion|minor|pet_*",
+--       spellID   = <spellID>,   -- optional; used to derive the canonical
+--                                --   icon via C_Spell.GetSpellTexture.
+--                                --   Preferred over hardcoding texture
+--                                --   paths since icons update with patches
+--                                --   and localise correctly.
+--       important = true,        -- optional; if set, the totem indicator
+--                                --   treats this NPC as "arena-critical"
+--                                --   (glow + pulse animation + magenta
+--                                --   important color, respects the user's
+--                                --   colorHealthBar / colorName toggles).
+--                                --   Reserve for totems that are priority
+--                                --   kicks/kills (Grounding, Capacitor,
+--                                --   Psyfiend, Tremor, Static Field,
+--                                --   Healing Tide, Spirit Link, etc.).
+--                                --   Non-critical totems (Skyfury,
+--                                --   Cloudburst, Wind Rush, etc.) leave
+--                                --   this off — they still get the
+--                                --   canonical icon but use the neutral
+--                                --   "generic totem" color.
+--   }
 --
 -- Type guidance (matches Blizzard's nameplate CVars):
 --   totem    -> stationary summons (nameplateShowFriendlyTotems / EnemyTotems)
+--   psyfiend -> priest Psyfiend specifically (dedicated tab)
 --   guardian -> larger semi-controllable summons (Elemental, Infernal, Tyrant, ...)
 --   minion   -> smaller summoned helpers (Wild Imp, Dreadstalker, Treant, ...)
 --   minor    -> tiny "minus" units
---   pet      -> the player's primary controllable pet
+--   pet_*    -> primary controllable pets, per-class buckets
 --
 -- IDs may drift between patches; if a totem appears under the wrong category in
 -- game, target it and run /mnp add to recategorise it (or just edit this file).
@@ -21,41 +44,43 @@ ns.NPC_DATA = {
 
     -- ────────────────────────────────────────────────────────────────────
     -- SHAMAN TOTEMS
-    -- Uncheck the boring ones (Healing Stream, Skyfury, Wind Rush, Cloudburst,
-    -- Earthen Wall, Mana Tide); leave gameplay-critical ones visible
-    -- (Capacitor, Tremor, Grounding, Spirit Link, Earthgrab, Healing Tide,
-    -- Static Field, Lightning Surge, Earthbind).
+    -- `spellID` gives us the canonical icon (via C_Spell.GetSpellTexture).
+    -- `important = true` marks arena-critical totems that must be visually
+    -- distinguished — they get the important-magenta color + glow + pulse.
+    -- Non-important totems still get their real icon but use the neutral
+    -- "generic totem" color so the plate reads as "a totem" without
+    -- competing for attention with the priority kicks/kills.
     -- ────────────────────────────────────────────────────────────────────
-    [3527]   = { name = "Healing Stream Totem",        type = "totem"    },
-    [61255]  = { name = "Healing Stream Totem (Resto)", type = "totem"   },
-    [2630]   = { name = "Earthbind Totem",             type = "totem"    },
-    [5913]   = { name = "Tremor Totem",                type = "totem"    },
-    [5925]   = { name = "Grounding Totem",             type = "totem"    },
-    [61245]  = { name = "Capacitor Totem",             type = "totem"    },
-    [59764]  = { name = "Healing Tide Totem",          type = "totem"    },
-    [98007]  = { name = "Spirit Link Totem",           type = "totem"    },
-    [60561]  = { name = "Earthgrab Totem",             type = "totem"    },
-    [97369]  = { name = "Liquid Magma Totem",          type = "totem"    },
-    [100943] = { name = "Earthen Wall Totem",          type = "totem"    },
-    [105427] = { name = "Skyfury Totem",               type = "totem"    },
-    [114896] = { name = "Wind Rush Totem",             type = "totem"    },
-    [207399] = { name = "Ancestral Protection Totem",  type = "totem"    },
-    [78001]  = { name = "Cloudburst Totem",            type = "totem"    },
-    [105451] = { name = "Counterstrike Totem",         type = "totem"    },
-    [196488] = { name = "Voodoo Totem",                type = "totem"    },
-    [73900]  = { name = "Mana Tide Totem",             type = "totem"    },
-    [188616] = { name = "Static Field Totem",          type = "totem"    },
-    [222329] = { name = "Surging Totem",               type = "totem"    },
-    [197211] = { name = "Lightning Surge Totem",       type = "totem"    },
-    [157929] = { name = "Resonance Totem",             type = "totem"    },
-    [108270] = { name = "Stone Bulwark Totem",         type = "totem"    },
-    [79931]  = { name = "Stoneskin Totem",             type = "totem"    },
-    [29142]  = { name = "Greater Earthbind Totem",     type = "totem"    },
-    [29144]  = { name = "Cleansing Totem",             type = "totem"    },
-    [4589]   = { name = "Stoneclaw Totem",             type = "totem"    },
-    [10467]  = { name = "Mana Spring Totem",           type = "totem"    },
-    [99691]  = { name = "Surging Totem (alt)",         type = "totem"    },
-    [192058] = { name = "Capacitor Totem (PvP alt)",   type = "totem"    },
+    [3527]   = { name = "Healing Stream Totem",         type = "totem", spellID = 5394   },
+    [61255]  = { name = "Healing Stream Totem (Resto)", type = "totem", spellID = 5394   },
+    [2630]   = { name = "Earthbind Totem",              type = "totem", spellID = 2484   },
+    [5913]   = { name = "Tremor Totem",                 type = "totem", spellID = 8143,   important = true },
+    [5925]   = { name = "Grounding Totem",              type = "totem", spellID = 204336, important = true },
+    [61245]  = { name = "Capacitor Totem",              type = "totem", spellID = 192058, important = true },
+    [59764]  = { name = "Healing Tide Totem",           type = "totem", spellID = 108280, important = true },
+    [98007]  = { name = "Spirit Link Totem",            type = "totem", spellID = 98008,  important = true },
+    [60561]  = { name = "Earthgrab Totem",              type = "totem", spellID = 51485,  important = true },
+    [97369]  = { name = "Liquid Magma Totem",           type = "totem", spellID = 192222 },
+    [100943] = { name = "Earthen Wall Totem",           type = "totem", spellID = 198838 },
+    [105427] = { name = "Skyfury Totem",                type = "totem", spellID = 208963 },
+    [114896] = { name = "Wind Rush Totem",              type = "totem", spellID = 192077 },
+    [207399] = { name = "Ancestral Protection Totem",   type = "totem", spellID = 207399, important = true },
+    [78001]  = { name = "Cloudburst Totem",             type = "totem", spellID = 157153 },
+    [105451] = { name = "Counterstrike Totem",          type = "totem", spellID = 208997, important = true },
+    [196488] = { name = "Voodoo Totem",                 type = "totem", spellID = 196932, important = true },
+    [73900]  = { name = "Mana Tide Totem",              type = "totem", spellID = 16190  },
+    [188616] = { name = "Static Field Totem",           type = "totem", spellID = 355580, important = true },
+    [222329] = { name = "Surging Totem",                type = "totem", spellID = 455591 },
+    [197211] = { name = "Lightning Surge Totem",        type = "totem", spellID = 210714, important = true },
+    [157929] = { name = "Resonance Totem",              type = "totem", spellID = 202192 },
+    [108270] = { name = "Stone Bulwark Totem",          type = "totem", spellID = 108270 },
+    [79931]  = { name = "Stoneskin Totem",              type = "totem", spellID = 8071   },
+    [29142]  = { name = "Greater Earthbind Totem",      type = "totem", spellID = 2484   },
+    [29144]  = { name = "Cleansing Totem",              type = "totem", spellID = 8170   },
+    [4589]   = { name = "Stoneclaw Totem",              type = "totem", spellID = 5730   },
+    [10467]  = { name = "Mana Spring Totem",            type = "totem", spellID = 5675   },
+    [99691]  = { name = "Surging Totem (alt)",          type = "totem", spellID = 455591 },
+    [192058] = { name = "Capacitor Totem (PvP alt)",    type = "totem", spellID = 192058, important = true },
 
     -- ────────────────────────────────────────────────────────────────────
     -- SHAMAN GUARDIANS (Elementals)
@@ -78,11 +103,13 @@ ns.NPC_DATA = {
 
     -- ────────────────────────────────────────────────────────────────────
     -- PRIEST
+    -- Psyfiend is arena-critical (channels Psychic Terror = 5s fear).
+    -- Icon uses the Psyfiend summon spell so it matches BBP's fallback.
     -- ────────────────────────────────────────────────────────────────────
-    [101398] = { name = "Psyfiend",                    type = "psyfiend" },
-    [19668]  = { name = "Shadowfiend",                 type = "guardian" },
-    [62982]  = { name = "Mindbender",                  type = "guardian" },
-    [224466] = { name = "Voidwraith",                  type = "guardian" },
+    [101398] = { name = "Psyfiend",                    type = "psyfiend", spellID = 199824, important = true },
+    [19668]  = { name = "Shadowfiend",                 type = "guardian", spellID = 34433 },
+    [62982]  = { name = "Mindbender",                  type = "guardian", spellID = 200174 },
+    [224466] = { name = "Voidwraith",                  type = "guardian", spellID = 451235 },
 
     -- ────────────────────────────────────────────────────────────────────
     -- MAGE
@@ -95,7 +122,7 @@ ns.NPC_DATA = {
     [31216]  = { name = "Mirror Image (legacy)",       type = "minion"   },
     [99319]  = { name = "Mirror Image (alt)",          type = "minion"   },
     [198706] = { name = "Mirror Image (alt 2)",        type = "minion"   },
-    [98659]  = { name = "Prismatic Crystal",           type = "totem"    },
+    [98659]  = { name = "Prismatic Crystal",           type = "totem", spellID = 155147 },
 
     -- ────────────────────────────────────────────────────────────────────
     -- WARLOCK PETS  (the main controllable demon)
@@ -190,8 +217,8 @@ ns.NPC_DATA = {
     -- ────────────────────────────────────────────────────────────────────
     -- MONK
     -- ────────────────────────────────────────────────────────────────────
-    [60849]  = { name = "Statue of the Jade Serpent",  type = "totem"    },
-    [61146]  = { name = "Statue of the Black Ox",      type = "totem"    },
+    [60849]  = { name = "Statue of the Jade Serpent",  type = "totem",    spellID = 115313 },
+    [61146]  = { name = "Statue of the Black Ox",      type = "totem",    spellID = 115315 },
     [63508]  = { name = "Xuen, the White Tiger",       type = "guardian" },
     [73967]  = { name = "Niuzao, the Black Ox",        type = "guardian" },
     [73855]  = { name = "Chi-Ji, the Red Crane",       type = "guardian" },
