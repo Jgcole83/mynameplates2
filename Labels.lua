@@ -189,94 +189,97 @@ end
 -- The plate argument is used only to resolve npcID; classification
 -- still works if plate is nil (older call sites) but skips path #1.
 local function _ClassifyTotem(unit, plate)
-    -- Priority 1: NPC_DATA-driven classification.  Runs first so a
-    -- known totem always renders with its canonical icon regardless
-    -- of what cast/channel state Blizzard reports at this instant
-    -- (a Grounding Totem doesn't cast or channel, but we still want
-    -- to render the Grounding icon + magenta color, not fall through
-    -- to the "first helpful aura" path which can pick the wrong
-    -- passive buff icon).
+    -- Icon-selection strategy (in order of confidence, restructured in
+    -- 1.36.10 to make sure "correct icon" wins over "generic icon" as
+    -- often as possible for arena-critical totems):
+    --
+    --   Step 1 — NPC_DATA icon.  If we know exactly which totem this is
+    --            (by npcID) and NPC_DATA has a spellID / icon override,
+    --            render it.  Best signal — exact match to the totem.
+    --   Step 2 — Cast / channel icon.  Psyfiend channels Psychic Fear;
+    --            Capacitor Totem casts Static Charge.  Both are useful
+    --            for anonymised arena plates where npcID isn't resolvable
+    --            but the cast/channel state still leaks through.
+    --   Step 3 — Helpful aura icon.  Every totem worth caring about
+    --            emits a HELPFUL aura visible via C_UnitAuras.  This is
+    --            the same signal BBP falls back to.  Prefer NPC_DATA's
+    --            `important` flag when we have one; otherwise use
+    --            C_Spell.IsSpellImportant on the aura's spellID.
+    --   Step 4 — Generic totem-recall icon.  Absolute last resort.
+    --            Preserve NPC_DATA's `important` flag by returning
+    --            magenta color so the plate still gets the arena
+    --            classification cue (glow + pulse + magenta) even if
+    --            we couldn't nail the exact icon.
     local npcID = _ResolvePlateNpcID(plate, unit)
-    if npcID then
-        local rec = _NpcRecord(npcID)
-        if rec then
-            local icon
-            -- Primary: C_Spell.GetSpellTexture(spellID).  Fast path and
-            -- handles the common case.
-            if rec.spellID and C_Spell and C_Spell.GetSpellTexture then
-                local okI, tex = pcall(C_Spell.GetSpellTexture, rec.spellID)
-                if okI and tex and not (issecretvalue and issecretvalue(tex)) then
-                    icon = tex
-                end
-            end
-            -- 1.36.9: fallback to C_Spell.GetSpellInfo(spellID).iconID.
-            -- Some PvP-talent totem spellIDs (Static Field, Counterstrike,
-            -- Voodoo, Lightning Surge, etc.) return nil from
-            -- GetSpellTexture when the local player isn't a shaman with
-            -- the talent selected — even though the spell exists in the
-            -- game data.  GetSpellInfo reads a broader table and
-            -- succeeds where GetSpellTexture doesn't.
-            if not icon and rec.spellID and C_Spell and C_Spell.GetSpellInfo then
-                local okS, spellInfo = pcall(C_Spell.GetSpellInfo, rec.spellID)
-                if okS and type(spellInfo) == "table" and spellInfo.iconID
-                   and not (issecretvalue and issecretvalue(spellInfo.iconID)) then
-                    icon = spellInfo.iconID
-                end
-            end
-            -- rec.icon = explicit texture path override (rare; used for
-            -- totems where a spellID-derived icon doesn't exist or
-            -- looks wrong).
-            if not icon and rec.icon then icon = rec.icon end
-            if icon then
-                if rec.important then
-                    return icon,
-                           TOTEM_COLOR_IMPORTANT[1], TOTEM_COLOR_IMPORTANT[2], TOTEM_COLOR_IMPORTANT[3],
-                           true, false, nil, false
-                end
-                local gr, gg, gb = _GenericColorRGB()
-                return icon, gr, gg, gb, false, false, nil, false
-            end
-            -- 1.36.9: NpcData record exists but icon resolution failed
-            -- (deprecated spellID, spell not loaded, etc.).  Preserve
-            -- the `important` flag so the plate still gets the arena
-            -- classification treatment (magenta color + glow + pulse)
-            -- even though we have to show the generic icon.  Pre-1.36.9
-            -- we fell through to the cast/channel/aura path here which
-            -- returned isImportant=false + neutral color, losing the
-            -- classification cue entirely for arena-critical totems
-            -- whose spellIDs happened to be unresolvable on the client.
-            if rec.important then
-                return TOTEM_ICON_GENERIC,
-                       TOTEM_COLOR_IMPORTANT[1], TOTEM_COLOR_IMPORTANT[2], TOTEM_COLOR_IMPORTANT[3],
-                       true, false, nil, false
+    local rec   = npcID and _NpcRecord(npcID) or nil
+    local recImportant = rec and rec.important or false
+
+    -- ── Step 1: NPC_DATA-driven icon ──────────────────────────────────
+    local npcDataIcon
+    if rec then
+        -- Primary: C_Spell.GetSpellTexture(spellID).  Fast path.
+        if rec.spellID and C_Spell and C_Spell.GetSpellTexture then
+            local okI, tex = pcall(C_Spell.GetSpellTexture, rec.spellID)
+            if okI and tex and not (issecretvalue and issecretvalue(tex)) then
+                npcDataIcon = tex
             end
         end
+        -- Fallback: C_Spell.GetSpellInfo(spellID).iconID.  Some PvP-
+        -- talent totem spellIDs (Static Field, Counterstrike, Voodoo,
+        -- Lightning Surge, etc.) return nil from GetSpellTexture when
+        -- the local player isn't a shaman with the talent selected but
+        -- succeed via GetSpellInfo which reads a broader spell table.
+        if not npcDataIcon and rec.spellID and C_Spell and C_Spell.GetSpellInfo then
+            local okS, spellInfo = pcall(C_Spell.GetSpellInfo, rec.spellID)
+            if okS and type(spellInfo) == "table" and spellInfo.iconID
+               and not (issecretvalue and issecretvalue(spellInfo.iconID)) then
+                npcDataIcon = spellInfo.iconID
+            end
+        end
+        -- rec.icon = explicit texture path override (rare).
+        if not npcDataIcon and rec.icon then npcDataIcon = rec.icon end
+    end
+    if npcDataIcon then
+        if recImportant then
+            return npcDataIcon,
+                   TOTEM_COLOR_IMPORTANT[1], TOTEM_COLOR_IMPORTANT[2], TOTEM_COLOR_IMPORTANT[3],
+                   true, false, nil, false
+        end
+        local gr, gg, gb = _GenericColorRGB()
+        return npcDataIcon, gr, gg, gb, false, false, nil, false
     end
 
-    if not unit then
-        local gr, gg, gb = _GenericColorRGB()
-        return TOTEM_ICON_GENERIC, gr, gg, gb, false, false, nil, false
-    end
+    -- ── Step 2: Cast / channel icon ───────────────────────────────────
     -- Wrap every Unit* call in pcall — on rare edge cases (unit token
     -- flips secret mid-frame) these can throw and we don't want the
     -- whole label pipeline to fault.
-    local ok1, channeling = pcall(UnitChannelInfo, unit)
-    if ok1 and channeling then
-        return TOTEM_ICON_PSYFIEND,
-               TOTEM_COLOR_PSYFIEND[1], TOTEM_COLOR_PSYFIEND[2], TOTEM_COLOR_PSYFIEND[3],
-               true, false, 12, false
+    if unit then
+        local ok1, channeling = pcall(UnitChannelInfo, unit)
+        if ok1 and channeling then
+            return TOTEM_ICON_PSYFIEND,
+                   TOTEM_COLOR_PSYFIEND[1], TOTEM_COLOR_PSYFIEND[2], TOTEM_COLOR_PSYFIEND[3],
+                   true, false, 12, false
+        end
+        local ok2, casting = pcall(UnitCastingInfo, unit)
+        if ok2 and casting then
+            return TOTEM_ICON_CAP,
+                   TOTEM_COLOR_CAP[1], TOTEM_COLOR_CAP[2], TOTEM_COLOR_CAP[3],
+                   true, false, 2, false
+        end
     end
-    local ok2, casting = pcall(UnitCastingInfo, unit)
-    if ok2 and casting then
-        return TOTEM_ICON_CAP,
-               TOTEM_COLOR_CAP[1], TOTEM_COLOR_CAP[2], TOTEM_COLOR_CAP[3],
-               true, false, 2, false
-    end
-    if C_UnitAuras and C_UnitAuras.GetUnitAuras then
+
+    -- ── Step 3: Helpful aura icon ─────────────────────────────────────
+    if unit and C_UnitAuras and C_UnitAuras.GetUnitAuras then
         local ok3, auras = pcall(C_UnitAuras.GetUnitAuras, unit, "HELPFUL")
         if ok3 and type(auras) == "table" and auras[1] then
             local a = auras[1]
-            if a and a.icon then
+            if a and a.icon and not (issecretvalue and issecretvalue(a.icon)) then
+                -- NPC_DATA importance wins over IsSpellImportant heuristic.
+                if recImportant then
+                    return a.icon,
+                           TOTEM_COLOR_IMPORTANT[1], TOTEM_COLOR_IMPORTANT[2], TOTEM_COLOR_IMPORTANT[3],
+                           true, false, nil, true
+                end
                 local imp = false
                 if C_Spell and C_Spell.IsSpellImportant and a.spellId then
                     local ok4, v = pcall(C_Spell.IsSpellImportant, a.spellId)
@@ -291,6 +294,16 @@ local function _ClassifyTotem(unit, plate)
                 return a.icon, gr, gg, gb, false, false, nil, true
             end
         end
+    end
+
+    -- ── Step 4: Generic totem-recall icon (last resort) ───────────────
+    -- Preserve NPC_DATA's `important` flag so the plate still gets
+    -- magenta + glow + pulse — better a wrong icon than a lost
+    -- arena classification cue.
+    if recImportant then
+        return TOTEM_ICON_GENERIC,
+               TOTEM_COLOR_IMPORTANT[1], TOTEM_COLOR_IMPORTANT[2], TOTEM_COLOR_IMPORTANT[3],
+               true, false, nil, false
     end
     local gr, gg, gb = _GenericColorRGB()
     return TOTEM_ICON_GENERIC, gr, gg, gb, false, false, nil, false
