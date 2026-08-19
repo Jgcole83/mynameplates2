@@ -1519,6 +1519,15 @@ SlashCmdList["MYNAMEPLATES"] = function(msg)
         if ns.RescanAllPlates then ns:RescanAllPlates() end
         ns:ApplyAll()
         print("|cff00c0ffMyNamePlates|r: rescanned plates and re-applied settings.")
+    elseif msg == "cat" or msg == "category" then
+        -- 1.36.25: shows what category the current target/mouseover
+        -- plate landed in, plus every classification signal
+        -- (UnitIsPlayer, hostile, CreatureType, UnitIsMinion, npcID,
+        -- summonType).  Point at a totem/pet/mob and run this to see
+        -- if the plate is on the tab you expect — if a totem shows
+        -- "enemyNPCs" instead of "enemyTotems", classification is
+        -- failing at IsPlayerSummon or AutoClassify for that unit.
+        if ns.DiagCategoryForTarget then ns:DiagCategoryForTarget() end
     elseif msg == "trace" then
         if ns.IsTracing and ns:IsTracing() then
             ns:StopTrace()

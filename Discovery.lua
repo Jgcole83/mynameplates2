@@ -291,10 +291,11 @@ local function AutoClassify(unit, guidKind, plate)
 
     -- NOTHING readable AND not minion-shaped.  Return nil so the
     -- caller (ClassifyPlate) falls through to the generic
-    -- `enemyPlayers` bucket, ApplyOverrides bails on the "no cat"
-    -- path, and Blizzard's default render runs untouched.  When the
-    -- user mouseovers / targets the unit, _CaptureSummonFromToken
-    -- re-runs Manage with the real type from the non-secret token.
+    -- `enemyNPCs` / `friendlyNPCs` bucket (renamed in 1.36.25 —
+    -- enemyPlayers used to also be the hostile catch-all), and
+    -- Blizzard's default render runs untouched.  When the user
+    -- mouseovers / targets the unit, _CaptureSummonFromToken re-runs
+    -- Manage with the real type from the non-secret token.
     return nil
 end
 
@@ -432,8 +433,9 @@ local function ApplyOverrides(info)
     --
     -- Why that broke in 1.32.4: when target/mouseover capture
     -- (_CaptureSummonFromToken) reclassifies a plate post-spawn from
-    -- "enemyPlayers" (the anonymised-fallback catch-all) into its
-    -- real summon category like "enemyGuardians", the plate is
+    -- "enemyNPCs" (the anonymised-fallback catch-all — was
+    -- "enemyPlayers" pre-1.36.25) into its real summon category like
+    -- "enemyGuardians", the plate is
     -- ALREADY VISIBLE.  The CVar only prevents future spawns; it
     -- doesn't despawn or hide an existing plate.  Without an
     -- alpha-0 enforcement, the user toggling "Enemy Guardians" off
@@ -1062,8 +1064,9 @@ local function _CaptureSummonFromToken(token)
     -- npcID to active[unit].npcID, which broke the per-NPC hide
     -- list (cat.hidden[npcID]) for anonymised plates — once we
     -- reclassified them into enemyDKPets / enemyGuardians / etc.,
-    -- the npcID stayed nil from the initial enemyPlayers fallback
-    -- and `cat.hidden[nil]` always returned nil.
+    -- the npcID stayed nil from the initial enemyNPCs fallback
+    -- (was enemyPlayers pre-1.36.25) and `cat.hidden[nil]` always
+    -- returned nil.
     local guid = UnitGUID(token)
     local guidKind
     local capturedNpcID
@@ -1289,7 +1292,16 @@ local function ClassifyPlate(unit, guidKind, plate)
         if catID then return catID, summonType end
     end
 
-    return hostile and "enemyPlayers" or "friendlyNPCs"
+    -- 1.36.25: hostile fallback splits into enemyNPCs (was enemyPlayers).
+    -- Real hostile players are already returned above via the
+    -- UnitIsPlayer branch; anything reaching here is a non-player
+    -- hostile entity — either a regular mob (world NPC, dungeon trash)
+    -- or a summon whose type our IsPlayerSummon/AutoClassify pipeline
+    -- couldn't resolve.  Both belong on the Enemy NPCs tab so the
+    -- user's Enemy Players slider governs only actual players.
+    -- Friendly side is unchanged (already had the friendlyPlayers /
+    -- friendlyNPCs split via a separate CVar on Blizzard's side).
+    return hostile and "enemyNPCs" or "friendlyNPCs"
 end
 
 ----------------------------------------------------------------------
@@ -1414,6 +1426,87 @@ function ns:GetPlateInfo(unit)
     if not unit then return nil end
     if issecretvalue and issecretvalue(unit) then return nil end
     return active[unit]
+end
+
+-- 1.36.25: /mnp cat diagnostic.  Prints the classification pipeline
+-- state for the current target or mouseover: what category the plate
+-- landed in, what summonType we derived, npcID, and the raw signals
+-- each classification gate reads.  Use this to prove/disprove "totems
+-- are falling through to Enemy NPCs because IsPlayerSummon missed
+-- them" — if the printed category is enemyNPCs when it should be
+-- enemyTotems, we know which gate to strengthen in NPC_DATA.
+function ns:DiagCategoryForTarget()
+    local unit
+    if UnitExists("target") then
+        unit = "target"
+    elseif UnitExists("mouseover") then
+        unit = "mouseover"
+    else
+        print("|cff00c0ffMyNamePlates|r cat: no target or mouseover.")
+        return
+    end
+
+    local name    = _SafeName(unit) or "?"
+    local isPlayer = _SafeBool(UnitIsPlayer, unit)
+    local hostile  = not _SafeBool(UnitIsFriend, "player", unit)
+    local npcID, guidKind = GetNPCID(unit)
+    local creatureType    = _SafeCT(unit)
+    local classification  = _SafeClassif(unit)
+    local isMinion        = _SafeBool(UnitIsMinion, unit)
+    local isOthersPet     = _SafeBool(UnitIsOtherPlayersPet, unit)
+    local playerControlled = _SafeBool(UnitPlayerControlled, unit)
+
+    -- Find the live nameplate binding (if any) via the token.  We look
+    -- up by the plate's UnitFrame.unit (which is the nameplate token,
+    -- not the "target"/"mouseover" token we started with).
+    local catID, summonType, plate
+    do
+        local pl = C_NamePlate and C_NamePlate.GetNamePlateForUnit
+                   and C_NamePlate.GetNamePlateForUnit(unit)
+        plate = pl
+        local pUnit = pl and pl.UnitFrame and pl.UnitFrame.unit
+        local info  = pUnit and ns:GetPlateInfo(pUnit)
+        if info then
+            catID      = info.categoryID
+            summonType = info.summonType
+        end
+    end
+
+    -- If the plate isn't currently in the active[] table (e.g. target
+    -- has no visible nameplate), reproduce what ClassifyPlate WOULD
+    -- return for this unit so the diagnostic is still useful.
+    if not catID then
+        local wouldBe = isPlayer and (hostile and "enemyPlayers" or "friendlyPlayers")
+        if not wouldBe then
+            if IsPlayerSummon(unit, guidKind, plate) then
+                local rec = GetNpcRecord(npcID)
+                if rec and rec.type then
+                    summonType = rec.type
+                    wouldBe = ns:CategoryForSummon(summonType, hostile)
+                end
+                if not wouldBe then
+                    local autoType = AutoClassify(unit, guidKind, plate)
+                    summonType = (autoType == "pet") and "pet_hunter" or autoType
+                    wouldBe = summonType and ns:CategoryForSummon(summonType, hostile)
+                end
+            end
+            wouldBe = wouldBe or (hostile and "enemyNPCs" or "friendlyNPCs")
+        end
+        catID = wouldBe
+    end
+
+    local cat = ns.CATEGORY_BY_ID[catID]
+    print(("|cff00c0ffMyNamePlates|r cat: %s"):format(name))
+    print(("  category:      %s  (%s)"):format(cat and cat.label or "?", tostring(catID)))
+    print(("  summonType:    %s"):format(tostring(summonType)))
+    print(("  npcID:         %s   guidKind: %s"):format(tostring(npcID), tostring(guidKind)))
+    print(("  UnitIsPlayer:  %s   hostile:  %s"):format(tostring(isPlayer), tostring(hostile)))
+    print(("  CreatureType:  %s   Classification: %s"):format(tostring(creatureType), tostring(classification)))
+    print(("  UnitIsMinion:  %s   OthersPet: %s   PlayerControlled: %s"):format(
+        tostring(isMinion), tostring(isOthersPet), tostring(playerControlled)))
+    if plate and plate:IsForbidden and plate:IsForbidden() then
+        print("  plate:         (FORBIDDEN — not managed; category is theoretical)")
+    end
 end
 
 function ns:DumpActive()
