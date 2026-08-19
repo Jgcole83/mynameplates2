@@ -85,21 +85,21 @@ ns.NPC_DATA = {
     -- ────────────────────────────────────────────────────────────────────
     -- SHAMAN GUARDIANS (Elementals)
     -- ────────────────────────────────────────────────────────────────────
-    [95061]  = { name = "Greater Earth Elemental",     type = "guardian" },
-    [95072]  = { name = "Greater Fire Elemental",      type = "guardian" },
-    [199729] = { name = "Fire Elemental",              type = "guardian" },
-    [77942]  = { name = "Storm Elemental",             type = "guardian" },
-    [205495] = { name = "Storm Elemental (Primal)",    type = "guardian" },
-    [15352]  = { name = "Earth Elemental",             type = "guardian" },
-    [15438]  = { name = "Fire Elemental (legacy)",     type = "guardian" },
+    [95061]  = { name = "Greater Earth Elemental",     type = "guardian", spellID = 198103 },
+    [95072]  = { name = "Greater Fire Elemental",      type = "guardian", spellID = 198067 },
+    [199729] = { name = "Fire Elemental",              type = "guardian", spellID = 198067 },
+    [77942]  = { name = "Storm Elemental",             type = "guardian", spellID = 192249 },
+    [205495] = { name = "Storm Elemental (Primal)",    type = "guardian", spellID = 192249 },
+    [15352]  = { name = "Earth Elemental",             type = "guardian", spellID = 198103 },
+    [15438]  = { name = "Fire Elemental (legacy)",     type = "guardian", spellID = 198067 },
     -- Enhancement Feral Spirit + Greater Storm Elemental from BBP
     -- secondaryPets (BetterBlizzPlates/midnight/BetterBlizzPlates.lua:3374-3377).
     -- Spirit Wolf is a proper "minion" per Blizzard's nameplate CVar
     -- classification (nameplateShowFriendlyMinions); Greater Storm
     -- Elemental is the Elemental spec 30s cooldown, filed alongside
     -- our other elementals as a guardian.
-    [29264]  = { name = "Spirit Wolf",                 type = "minion"   },
-    [77936]  = { name = "Greater Storm Elemental",     type = "guardian" },
+    [29264]  = { name = "Spirit Wolf",                 type = "minion",   spellID = 51533  },
+    [77936]  = { name = "Greater Storm Elemental",     type = "guardian", spellID = 192249 },
 
     -- ────────────────────────────────────────────────────────────────────
     -- PRIEST
@@ -114,30 +114,36 @@ ns.NPC_DATA = {
     -- ────────────────────────────────────────────────────────────────────
     -- MAGE
     -- ────────────────────────────────────────────────────────────────────
-    [78116]  = { name = "Water Elemental",             type = "pet_mage" },
-    [37994]  = { name = "Water Elemental (legacy)",    type = "pet_mage" },
-    [510]    = { name = "Water Elemental (Conjure)",   type = "minion"   },
-    [253759] = { name = "Mirror Image (Midnight)",     type = "minion"   },
-    [175313] = { name = "Mirror Image (Shadowlands)",  type = "minion"   },
-    [31216]  = { name = "Mirror Image (legacy)",       type = "minion"   },
-    [99319]  = { name = "Mirror Image (alt)",          type = "minion"   },
-    [198706] = { name = "Mirror Image (alt 2)",        type = "minion"   },
+    [78116]  = { name = "Water Elemental",             type = "pet_mage", spellID = 31687 },
+    [37994]  = { name = "Water Elemental (legacy)",    type = "pet_mage", spellID = 31687 },
+    [510]    = { name = "Water Elemental (Conjure)",   type = "minion",   spellID = 31687 },
+    [253759] = { name = "Mirror Image (Midnight)",     type = "minion",   spellID = 55342 },
+    [175313] = { name = "Mirror Image (Shadowlands)",  type = "minion",   spellID = 55342 },
+    [31216]  = { name = "Mirror Image (legacy)",       type = "minion",   spellID = 55342 },
+    [99319]  = { name = "Mirror Image (alt)",          type = "minion",   spellID = 55342 },
+    [198706] = { name = "Mirror Image (alt 2)",        type = "minion",   spellID = 55342 },
     [98659]  = { name = "Prismatic Crystal",           type = "totem", spellID = 155147 },
 
     -- ────────────────────────────────────────────────────────────────────
     -- WARLOCK PETS  (the main controllable demon)
+    -- spellIDs point to the Summon spell for each pet so the totem
+    -- indicator icon shows the recognizable "Summon Imp" / "Summon
+    -- Voidwalker" etc. face rather than falling to the shaman totem-
+    -- recall generic.  Legion Grimoire of Supremacy variants (Fel Imp,
+    -- Voidlord, Shivarra, Observer, Wrathguard) use their Grimoire
+    -- summon spell IDs (112866-112870).
     -- ────────────────────────────────────────────────────────────────────
-    [416]    = { name = "Imp",                         type = "pet_warlock" },
-    [417]    = { name = "Felhunter",                   type = "pet_warlock" },
-    [1860]   = { name = "Voidwalker",                  type = "pet_warlock" },
-    [1863]   = { name = "Succubus",                    type = "pet_warlock" },
-    [17252]  = { name = "Felguard",                    type = "pet_warlock" },
-    [115748] = { name = "Fel Imp",                     type = "pet_warlock" },
-    [115772] = { name = "Voidlord",                    type = "pet_warlock" },
-    [115778] = { name = "Shivarra",                    type = "pet_warlock" },
-    [115781] = { name = "Observer",                    type = "pet_warlock" },
-    [115782] = { name = "Wrathguard",                  type = "pet_warlock" },
-    [184600] = { name = "Incubus",                     type = "pet_warlock" },
+    [416]    = { name = "Imp",                         type = "pet_warlock", spellID = 688    },
+    [417]    = { name = "Felhunter",                   type = "pet_warlock", spellID = 691    },
+    [1860]   = { name = "Voidwalker",                  type = "pet_warlock", spellID = 697    },
+    [1863]   = { name = "Succubus",                    type = "pet_warlock", spellID = 712    },
+    [17252]  = { name = "Felguard",                    type = "pet_warlock", spellID = 30146  },
+    [115748] = { name = "Fel Imp",                     type = "pet_warlock", spellID = 112866 },
+    [115772] = { name = "Voidlord",                    type = "pet_warlock", spellID = 112867 },
+    [115778] = { name = "Shivarra",                    type = "pet_warlock", spellID = 112868 },
+    [115781] = { name = "Observer",                    type = "pet_warlock", spellID = 112869 },
+    [115782] = { name = "Wrathguard",                  type = "pet_warlock", spellID = 112870 },
+    [184600] = { name = "Incubus",                     type = "pet_warlock", spellID = 712    },
 
     -- ────────────────────────────────────────────────────────────────────
     -- WARLOCK SUMMONS — every Warlock-summoned unit (Affliction / Demo /
@@ -149,19 +155,19 @@ ns.NPC_DATA = {
     -- classifies them differently, you almost never want different
     -- treatment for "Felguard" vs "Wild Imp".
     -- ────────────────────────────────────────────────────────────────────
-    [89]     = { name = "Infernal",                    type = "pet_warlock" },
-    [11859]  = { name = "Doomguard",                   type = "pet_warlock" },
-    [135002] = { name = "Demonic Tyrant",              type = "pet_warlock" },
-    [196111] = { name = "Pit Lord",                    type = "pet_warlock" },
-    [55659]  = { name = "Wild Imp",                    type = "pet_warlock" },
-    [230873] = { name = "Wild Imp (modern)",           type = "pet_warlock" },
-    [143622] = { name = "Wild Imp (alt)",              type = "pet_warlock" },
-    [98035]  = { name = "Dreadstalker",                type = "pet_warlock" },
-    [93616]  = { name = "Dreadstalker (alt)",          type = "pet_warlock" },
-    [117177] = { name = "Dreadstalker (alt 2)",        type = "pet_warlock" },
-    [231037] = { name = "Dreadstalker (modern)",       type = "pet_warlock" },
-    [108503] = { name = "Grimoire: Felguard",          type = "pet_warlock" },
-    [99737]  = { name = "Vilefiend",                   type = "pet_warlock" },
+    [89]     = { name = "Infernal",                    type = "pet_warlock", spellID = 1122   },
+    [11859]  = { name = "Doomguard",                   type = "pet_warlock", spellID = 18540  },
+    [135002] = { name = "Demonic Tyrant",              type = "pet_warlock", spellID = 265187 },
+    [196111] = { name = "Pit Lord",                    type = "pet_warlock", spellID = 267171 },
+    [55659]  = { name = "Wild Imp",                    type = "pet_warlock", spellID = 104317 },
+    [230873] = { name = "Wild Imp (modern)",           type = "pet_warlock", spellID = 104317 },
+    [143622] = { name = "Wild Imp (alt)",              type = "pet_warlock", spellID = 104317 },
+    [98035]  = { name = "Dreadstalker",                type = "pet_warlock", spellID = 104316 },
+    [93616]  = { name = "Dreadstalker (alt)",          type = "pet_warlock", spellID = 104316 },
+    [117177] = { name = "Dreadstalker (alt 2)",        type = "pet_warlock", spellID = 104316 },
+    [231037] = { name = "Dreadstalker (modern)",       type = "pet_warlock", spellID = 104316 },
+    [108503] = { name = "Grimoire: Felguard",          type = "pet_warlock", spellID = 111898 },
+    [99737]  = { name = "Vilefiend",                   type = "pet_warlock", spellID = 264119 },
     [221008] = { name = "Doomfiend",                   type = "pet_warlock" },
     [221012] = { name = "Charhound",                   type = "pet_warlock" },
     [4277]   = { name = "Eye of Kilrogg",              type = "pet_warlock" },
@@ -186,24 +192,24 @@ ns.NPC_DATA = {
     -- ────────────────────────────────────────────────────────────────────
     -- DRUID
     -- ────────────────────────────────────────────────────────────────────
-    [54983]  = { name = "Treant (Force of Nature)",    type = "minion"   },
-    [29608]  = { name = "Treant",                      type = "minion"   },
-    [1964]   = { name = "Treant (legacy)",             type = "minion"   },
+    [54983]  = { name = "Treant (Force of Nature)",    type = "minion",   spellID = 205636 },
+    [29608]  = { name = "Treant",                      type = "minion",   spellID = 205636 },
+    [1964]   = { name = "Treant (legacy)",             type = "minion",   spellID = 33831  },
 
     -- ────────────────────────────────────────────────────────────────────
     -- DEATH KNIGHT
     -- ────────────────────────────────────────────────────────────────────
-    [26125]  = { name = "Risen Ghoul",                 type = "pet_dk"   },
-    [27893]  = { name = "Risen Ghoul (alt)",           type = "pet_dk"   },
-    [148020] = { name = "Risen Ghoul (modern)",        type = "pet_dk"   },
-    [24207]  = { name = "Army of the Dead Ghoul",      type = "minion"   },
-    [193758] = { name = "Risen Skulker",               type = "minion"   },
-    [27829]  = { name = "Gargoyle",                    type = "guardian" },
-    [49206]  = { name = "Gargoyle (alt)",              type = "guardian" },
-    [99541]  = { name = "Apocalypse Ghoul",            type = "minion"   },
-    [163366] = { name = "Magus of the Dead",           type = "minion"   },
-    [192337] = { name = "Abomination",                 type = "pet_dk"   },
-    [171557] = { name = "Bloodworm",                   type = "minor"    },
+    [26125]  = { name = "Risen Ghoul",                 type = "pet_dk",   spellID = 46584  },
+    [27893]  = { name = "Risen Ghoul (alt)",           type = "pet_dk",   spellID = 46584  },
+    [148020] = { name = "Risen Ghoul (modern)",        type = "pet_dk",   spellID = 46584  },
+    [24207]  = { name = "Army of the Dead Ghoul",      type = "minion",   spellID = 42650  },
+    [193758] = { name = "Risen Skulker",               type = "minion",   spellID = 212423 },
+    [27829]  = { name = "Gargoyle",                    type = "guardian", spellID = 49206  },
+    [49206]  = { name = "Gargoyle (alt)",              type = "guardian", spellID = 49206  },
+    [99541]  = { name = "Apocalypse Ghoul",            type = "minion",   spellID = 275699 },
+    [163366] = { name = "Magus of the Dead",           type = "minion",   spellID = 288853 },
+    [192337] = { name = "Abomination",                 type = "pet_dk",   spellID = 288853 },
+    [171557] = { name = "Bloodworm",                   type = "minor",    spellID = 195679 },
     -- Sanlayn Riders of the Apocalypse (San'layn hero tree).  Sourced
     -- from BetterBlizzPlates/midnight/BetterBlizzPlates.lua:3346-3350.
     -- Filed as "minion" to match Army-of-the-Dead siblings — they're
@@ -219,9 +225,9 @@ ns.NPC_DATA = {
     -- ────────────────────────────────────────────────────────────────────
     [60849]  = { name = "Statue of the Jade Serpent",  type = "totem",    spellID = 115313 },
     [61146]  = { name = "Statue of the Black Ox",      type = "totem",    spellID = 115315 },
-    [63508]  = { name = "Xuen, the White Tiger",       type = "guardian" },
-    [73967]  = { name = "Niuzao, the Black Ox",        type = "guardian" },
-    [73855]  = { name = "Chi-Ji, the Red Crane",       type = "guardian" },
+    [63508]  = { name = "Xuen, the White Tiger",       type = "guardian", spellID = 123904 },
+    [73967]  = { name = "Niuzao, the Black Ox",        type = "guardian", spellID = 132578 },
+    [73855]  = { name = "Chi-Ji, the Red Crane",       type = "guardian", spellID = 325197 },
     [165554] = { name = "Storm Spirit",                type = "minion"   },
     [165555] = { name = "Earth Spirit",                type = "minion"   },
     [165556] = { name = "Fire Spirit",                 type = "minion"   },

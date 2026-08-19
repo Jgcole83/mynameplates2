@@ -102,6 +102,72 @@ local TOTEM_COLOR_IMPORTANT= { 1.00, 0.00, 1.00 }   -- magenta (Grounding-class)
 local TOTEM_COLOR_CAP      = { 1.00, 0.69, 0.00 }   -- orange
 local TOTEM_COLOR_PSYFIEND = { 0.49, 0.00, 1.00 }   -- purple
 
+-- 1.36.26: per-summonType fallback icons + colors.  Prior to this,
+-- every summon whose classifier fell through to Step 4 got the generic
+-- totem-recall icon in brown — including warlock Observers, DK Ghouls,
+-- Water Elementals, non-channeling Psyfiends, etc.  A warlock pet
+-- plate wearing the shaman totem-recall icon reads as broken.
+--
+-- Now Step 4 indexes into ICON_BY_TYPE by the plate's resolved
+-- summonType (from _TotemIconType) and uses a class-appropriate
+-- generic instead.  Users who target/mouseover a summon (or see it
+-- classified via NPC_DATA) get an icon that at minimum communicates
+-- "this is a warlock pet" / "this is a Psyfiend" / "this is a
+-- guardian" rather than "this is an unknown totem".
+--
+-- Users still get the exact right icon (Grounding icon on Grounding,
+-- etc.) whenever _ClassifyTotem Step 1 succeeds — i.e. whenever the
+-- npcID resolves and NPC_DATA has a spellID.  This table is purely
+-- the last-resort fallback for un-curated or fully-anonymised plates.
+--
+-- COLOR_BY_TYPE mirrors the same idea for the healthbar + name
+-- recolor path.  Class colors chosen from Blizzard's canonical
+-- RAID_CLASS_COLORS values.
+local TOTEM_ICON_PET_WARLOCK = C_Spell and C_Spell.GetSpellTexture
+                               and C_Spell.GetSpellTexture(30146)      -- Summon Felguard
+                               or "Interface\\Icons\\Spell_Shadow_SummonFelguard"
+local TOTEM_ICON_PET_HUNTER  = C_Spell and C_Spell.GetSpellTexture
+                               and C_Spell.GetSpellTexture(883)        -- Call Pet 1
+                               or "Interface\\Icons\\Ability_Hunter_BeastCall"
+local TOTEM_ICON_PET_DK      = C_Spell and C_Spell.GetSpellTexture
+                               and C_Spell.GetSpellTexture(46584)      -- Raise Dead
+                               or "Interface\\Icons\\Spell_Shadow_AnimateDead"
+local TOTEM_ICON_PET_MAGE    = C_Spell and C_Spell.GetSpellTexture
+                               and C_Spell.GetSpellTexture(31687)      -- Summon Water Elemental
+                               or "Interface\\Icons\\Spell_Frost_SummonWaterElemental"
+local TOTEM_ICON_GUARDIAN    = C_Spell and C_Spell.GetSpellTexture
+                               and C_Spell.GetSpellTexture(1122)       -- Summon Infernal
+                               or "Interface\\Icons\\Spell_Shadow_SummonInfernal"
+local TOTEM_ICON_MINION      = C_Spell and C_Spell.GetSpellTexture
+                               and C_Spell.GetSpellTexture(104316)     -- Call Dreadstalkers
+                               or "Interface\\Icons\\Spell_Warlock_Calldreadstalkers"
+
+local ICON_BY_TYPE = {
+    totem       = TOTEM_ICON_GENERIC,
+    psyfiend    = TOTEM_ICON_PSYFIEND,
+    pet_warlock = TOTEM_ICON_PET_WARLOCK,
+    pet_hunter  = TOTEM_ICON_PET_HUNTER,
+    pet_dk      = TOTEM_ICON_PET_DK,
+    pet_mage    = TOTEM_ICON_PET_MAGE,
+    guardian    = TOTEM_ICON_GUARDIAN,
+    minion      = TOTEM_ICON_MINION,
+    minor       = TOTEM_ICON_MINION,
+}
+
+-- Class colors from RAID_CLASS_COLORS; brown fallback for uncertain
+-- types like generic guardians/minions (any class can summon those).
+local COLOR_BY_TYPE = {
+    totem       = TOTEM_COLOR_GENERIC,             -- brown (user-configurable via genericColor)
+    psyfiend    = TOTEM_COLOR_PSYFIEND,            -- purple
+    pet_warlock = { 0.58, 0.51, 0.79 },            -- warlock purple
+    pet_hunter  = { 0.67, 0.83, 0.45 },            -- hunter green
+    pet_dk      = { 0.77, 0.12, 0.23 },            -- DK red
+    pet_mage    = { 0.25, 0.78, 0.92 },            -- mage light-blue
+    guardian    = TOTEM_COLOR_GENERIC,             -- unknown owner class
+    minion      = TOTEM_COLOR_GENERIC,             -- unknown owner class
+    minor       = TOTEM_COLOR_GENERIC,             -- unknown owner class
+}
+
 -- Read the user-configurable generic totem color (BBP parity —
 -- BetterBlizzPlatesDB.totemIndicatorTotemColor).  Falls back to the
 -- hardcoded neutral brown when the DB isn't ready yet.  Returns three
@@ -188,7 +254,7 @@ end
 --
 -- The plate argument is used only to resolve npcID; classification
 -- still works if plate is nil (older call sites) but skips path #1.
-local function _ClassifyTotem(unit, plate)
+local function _ClassifyTotem(unit, plate, summonType)
     -- Icon-selection strategy (in order of confidence, restructured in
     -- 1.36.10 to make sure "correct icon" wins over "generic icon" as
     -- often as possible for arena-critical totems):
@@ -205,11 +271,26 @@ local function _ClassifyTotem(unit, plate)
     --            the same signal BBP falls back to.  Prefer NPC_DATA's
     --            `important` flag when we have one; otherwise use
     --            C_Spell.IsSpellImportant on the aura's spellID.
-    --   Step 4 — Generic totem-recall icon.  Absolute last resort.
-    --            Preserve NPC_DATA's `important` flag by returning
-    --            magenta color so the plate still gets the arena
-    --            classification cue (glow + pulse + magenta) even if
-    --            we couldn't nail the exact icon.
+    --            1.36.26: only fires for totem / psyfiend summonType.
+    --            For warlock/hunter/DK/mage pets and guardians, the
+    --            first HELPFUL aura is a random buff (Prowl, various
+    --            demon buffs) that doesn't visually identify the pet
+    --            and often reads worse than the type-specific fallback.
+    --   Step 4 — Type-specific generic icon.  Was totem-recall for
+    --            everything pre-1.36.26; now indexed into ICON_BY_TYPE
+    --            by summonType so a warlock Observer gets a demon-
+    --            summon icon, a DK Ghoul gets Raise Dead, a mage
+    --            Water Elemental gets its summon icon, etc.  Preserves
+    --            NPC_DATA's `important` flag by returning magenta color
+    --            so the plate still gets the arena classification cue
+    --            (glow + pulse + magenta) even if we couldn't nail the
+    --            exact spellbook icon.
+    --
+    -- summonType parameter (1.36.26): the plate's resolved summon
+    -- type from _TotemIconType (pet_warlock, psyfiend, totem, guardian,
+    -- minion, minor, pet_hunter, pet_dk, pet_mage).  Used to pick the
+    -- Step 4 fallback and to gate Step 3.  Optional — nil-safe (falls
+    -- back to totem-recall + generic color, same as pre-1.36.26).
     local npcID = _ResolvePlateNpcID(plate, unit)
     local rec   = npcID and _NpcRecord(npcID) or nil
     local recImportant = rec and rec.important or false
@@ -268,8 +349,16 @@ local function _ClassifyTotem(unit, plate)
         end
     end
 
-    -- ── Step 3: Helpful aura icon ─────────────────────────────────────
-    if unit and C_UnitAuras and C_UnitAuras.GetUnitAuras then
+    -- ── Step 3: Helpful aura icon (totem / psyfiend only) ─────────────
+    -- 1.36.26: gate on summonType.  Helpful auras are a good totem
+    -- signal (Grounding, Tremor, Earthbind, Healing Tide all emit
+    -- HELPFUL auras).  For pets/guardians/minions the first helpful
+    -- aura is a random buff (Prowl, minor combat buffs, demon
+    -- self-buffs) that visually looks like a random spell — worse
+    -- than the type-specific fallback in Step 4.
+    local auraEligible = (not summonType) or summonType == "totem"
+                                            or summonType == "psyfiend"
+    if auraEligible and unit and C_UnitAuras and C_UnitAuras.GetUnitAuras then
         local ok3, auras = pcall(C_UnitAuras.GetUnitAuras, unit, "HELPFUL")
         if ok3 and type(auras) == "table" and auras[1] then
             local a = auras[1]
@@ -296,17 +385,36 @@ local function _ClassifyTotem(unit, plate)
         end
     end
 
-    -- ── Step 4: Generic totem-recall icon (last resort) ───────────────
+    -- ── Step 4: Type-specific generic icon (last resort) ──────────────
+    -- 1.36.26: was hardcoded TOTEM_ICON_GENERIC (shaman totem-recall)
+    -- for every summon type; now indexed by summonType so warlock
+    -- pets get a demon icon, DK Ghouls get Raise Dead, Water
+    -- Elementals get their summon icon, non-channeling Psyfiends get
+    -- the Psyfiend icon, etc.  Falls through to totem-recall for
+    -- unknown summonType (matches pre-1.36.26 behavior).
+    --
     -- Preserve NPC_DATA's `important` flag so the plate still gets
     -- magenta + glow + pulse — better a wrong icon than a lost
     -- arena classification cue.
+    local fallbackIcon = ICON_BY_TYPE[summonType or "totem"] or TOTEM_ICON_GENERIC
     if recImportant then
-        return TOTEM_ICON_GENERIC,
+        return fallbackIcon,
                TOTEM_COLOR_IMPORTANT[1], TOTEM_COLOR_IMPORTANT[2], TOTEM_COLOR_IMPORTANT[3],
                true, false, nil, false
     end
-    local gr, gg, gb = _GenericColorRGB()
-    return TOTEM_ICON_GENERIC, gr, gg, gb, false, false, nil, false
+    -- Color also indexed by summonType so a warlock pet plate reads
+    -- as purple (warlock class color), DK Ghoul as red, etc.  Falls
+    -- back to the user-configurable generic brown for unknown types
+    -- and for totems / guardians / minions where the summoner class
+    -- can't be determined from summonType alone.
+    local col = COLOR_BY_TYPE[summonType or "totem"] or TOTEM_COLOR_GENERIC
+    local r, g, b
+    if col == TOTEM_COLOR_GENERIC then
+        r, g, b = _GenericColorRGB()
+    else
+        r, g, b = col[1], col[2], col[3]
+    end
+    return fallbackIcon, r, g, b, false, false, nil, false
 end
 
 -- Lazy per-plate icon widget.  Same forbidden-check pattern as
@@ -913,14 +1021,24 @@ _ApplyTotemIcon = function(plate, unit, isFriend)
     end
 
     -- Skip the classifier entirely on secret unit tokens (Unit*Info calls
-    -- on a secret string can taint us) — render the generic totem icon
-    -- and colour without probing the unit.  BBP does effectively the
-    -- same when their heuristics come up empty.
+    -- on a secret string can taint us) — render the type-appropriate
+    -- generic icon and colour without probing the unit.  BBP does
+    -- effectively the same when their heuristics come up empty.
+    --
+    -- 1.36.26: even on secret tokens we know summonType (from the
+    -- _summonByPlate capture or NPC_DATA lookup done above in
+    -- _TotemIconType).  So a secret warlock Observer plate still
+    -- reads as "warlock pet" visually instead of getting the shaman
+    -- totem-recall icon.
     local icon, r, g, b, isImportant, isImportantAura, duration, hasAura
     if issecretvalue and issecretvalue(unit) then
-        icon = TOTEM_ICON_GENERIC
-        local gr, gg, gb = _GenericColorRGB()
-        r, g, b = gr, gg, gb
+        icon = ICON_BY_TYPE[st or "totem"] or TOTEM_ICON_GENERIC
+        local col = COLOR_BY_TYPE[st or "totem"] or TOTEM_COLOR_GENERIC
+        if col == TOTEM_COLOR_GENERIC then
+            r, g, b = _GenericColorRGB()
+        else
+            r, g, b = col[1], col[2], col[3]
+        end
         isImportant, isImportantAura, duration, hasAura = false, false, nil, false
     else
         -- 1.36.1: pass plate so _ClassifyTotem can consult NPC_DATA via
@@ -928,8 +1046,11 @@ _ApplyTotemIcon = function(plate, unit, isFriend)
         -- canonical icon (Grounding icon on Grounding Totem, etc.) and
         -- honour the curated `important` flag instead of guessing via
         -- cast/channel/aura state.
+        -- 1.36.26: also pass st (resolved summonType) so the classifier's
+        -- Step 4 fallback picks a type-appropriate icon + color instead
+        -- of always the shaman totem-recall in brown.
         icon, r, g, b, isImportant, isImportantAura, duration, hasAura =
-            _ClassifyTotem(unit, plate)
+            _ClassifyTotem(unit, plate, st)
         -- Psyfiend spawn-race: no channel yet but plate qualifies —
         -- schedule a 250ms re-classify.  Only worth it when this
         -- plate is actually a summon by classification (which it is
