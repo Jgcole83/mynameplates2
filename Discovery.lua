@@ -291,11 +291,10 @@ local function AutoClassify(unit, guidKind, plate)
 
     -- NOTHING readable AND not minion-shaped.  Return nil so the
     -- caller (ClassifyPlate) falls through to the generic
-    -- `enemyNPCs` / `friendlyNPCs` bucket (renamed in 1.36.25 —
-    -- enemyPlayers used to also be the hostile catch-all), and
-    -- Blizzard's default render runs untouched.  When the user
-    -- mouseovers / targets the unit, _CaptureSummonFromToken re-runs
-    -- Manage with the real type from the non-secret token.
+    -- `enemyPlayers` bucket, ApplyOverrides bails on the "no cat"
+    -- path, and Blizzard's default render runs untouched.  When the
+    -- user mouseovers / targets the unit, _CaptureSummonFromToken
+    -- re-runs Manage with the real type from the non-secret token.
     return nil
 end
 
@@ -433,9 +432,8 @@ local function ApplyOverrides(info)
     --
     -- Why that broke in 1.32.4: when target/mouseover capture
     -- (_CaptureSummonFromToken) reclassifies a plate post-spawn from
-    -- "enemyNPCs" (the anonymised-fallback catch-all — was
-    -- "enemyPlayers" pre-1.36.25) into its real summon category like
-    -- "enemyGuardians", the plate is
+    -- "enemyPlayers" (the anonymised-fallback catch-all) into its
+    -- real summon category like "enemyGuardians", the plate is
     -- ALREADY VISIBLE.  The CVar only prevents future spawns; it
     -- doesn't despawn or hide an existing plate.  Without an
     -- alpha-0 enforcement, the user toggling "Enemy Guardians" off
@@ -479,14 +477,9 @@ local function ApplyOverrides(info)
     -- previously hid then re-enabled.  `uf` is already in scope from the
     -- forbidden-frame bail above.
     if hidden then
-        -- 1.36.23: stash target BEFORE writing so the stashed-alpha
-        -- reassert hook in HookUnitFrame keeps the value pinned against
-        -- Blizzard's engine reasserts (distance/selection alpha).
-        plate.MyNP_targetAlpha = 0
         plate:SetAlpha(0)
         plate.MyNP_alphaOwned = true
         if uf then
-            uf.MyNP_targetAlpha = 0
             uf:SetAlpha(0)
             uf.MyNP_alphaOwned = true
         end
@@ -514,23 +507,15 @@ local function ApplyOverrides(info)
         -- we had previously written non-engine values (hide or per-
         -- category override); otherwise leave alpha & scale untouched
         -- so the user's Selected* CVar settings actually apply.
-        --
-        -- 1.36.23: clear stashed targets BEFORE the SetAlpha/SetScale
-        -- write.  If we cleared after, the hook (which fires DURING
-        -- SetAlpha) would see the still-stashed 0.5 and immediately
-        -- rewrite it, defeating the target-visibility handoff.
         if plate.MyNP_alphaOwned then
-            plate.MyNP_targetAlpha = nil
             plate:SetAlpha(1.0)
             plate.MyNP_alphaOwned = nil
         end
         if uf and uf.MyNP_alphaOwned then
-            uf.MyNP_targetAlpha = nil
             uf:SetAlpha(1.0)
             uf.MyNP_alphaOwned = nil
         end
         if uf and uf.MyNP_scaleOwned then
-            uf.MyNP_targetScale = nil
             uf:SetScale(1.0)
             uf.MyNP_scaleOwned = nil
         end
@@ -552,34 +537,18 @@ local function ApplyOverrides(info)
     -- SetAlpha reassert hook), which is why the "Minimum / Maximum
     -- Alpha" sliders on the General tab silently no-op'd.
     if alpha < 1.0 then
-        -- 1.36.23: stash target BEFORE SetAlpha.  Enemy pet plates in
-        -- retail Midnight 12.x arena have anonymised uf.unit tokens, so
-        -- the reassert() closure below bails on issecretvalue and can't
-        -- re-run ApplyOverrides when the engine stomps our value.  The
-        -- MyNP_targetAlpha stash lets the _reassertStashedAlpha hook
-        -- (installed by HookUnitFrame) pin the alpha regardless of
-        -- unit-token secrecy.  Before this fix, the user's per-category
-        -- opacity slider silently no-op'd on exactly the plates it was
-        -- meant for (Enemy Hunter/Warlock/DK/Mage Pets).
-        plate.MyNP_targetAlpha = alpha
         plate:SetAlpha(alpha)
         plate.MyNP_alphaOwned = true
         if uf then
-            uf.MyNP_targetAlpha = alpha
             uf:SetAlpha(alpha)
             uf.MyNP_alphaOwned = true
         end
     elseif plate.MyNP_alphaOwned then
         -- One-shot restore: hand control back to the engine.  Blizzard's
         -- next distance-alpha tick will overwrite this value.
-        --
-        -- 1.36.23: clear the stashed target BEFORE SetAlpha so the
-        -- reassert hook doesn't immediately re-pin the old value.
-        plate.MyNP_targetAlpha = nil
         plate:SetAlpha(1.0)
         plate.MyNP_alphaOwned = nil
         if uf and uf.MyNP_alphaOwned then
-            uf.MyNP_targetAlpha = nil
             uf:SetAlpha(1.0)
             uf.MyNP_alphaOwned = nil
         end
@@ -599,30 +568,9 @@ local function ApplyOverrides(info)
     -- drives visuals as intended.
     if uf then
         if isSummonCat or scale ~= 1.0 then
-            -- 1.36.24: plate-scale compensated write.
-            --
-            -- Pre-1.36.24 we wrote uf:SetScale(cat.scale) directly.
-            -- That silently no-op'd because effective plate size =
-            -- plate.scale * uf.scale, and Blizzard's engine writes
-            -- plate:SetScale for distance / target / global fade all
-            -- the time.  E.g. a distance-faded plate has plate.scale
-            -- 0.65; our uf:SetScale(1.5) gave effective 0.975 —
-            -- indistinguishable from 1.0 by eye, so the Scale slider
-            -- looked broken.  See HookUnitFrame comment above for the
-            -- full mechanism.
-            --
-            -- Fix: divide by current plate.scale so effective =
-            -- plate.scale * (cat.scale / plate.scale) = cat.scale.
-            -- The plate:SetScale observer hook (also in HookUnitFrame)
-            -- re-runs this same compensation whenever the engine
-            -- changes plate.scale, keeping visual size pinned.
-            uf.MyNP_targetScale = scale
-            local plateScale = plate.GetScale and plate:GetScale() or 1.0
-            if not plateScale or plateScale <= 0 then plateScale = 1.0 end
-            uf:SetScale(scale / plateScale)
+            uf:SetScale(scale)
             uf.MyNP_scaleOwned = true
         elseif uf.MyNP_scaleOwned then
-            uf.MyNP_targetScale = nil
             uf:SetScale(1.0)
             uf.MyNP_scaleOwned = nil
         end
@@ -698,110 +646,8 @@ local function HookUnitFrame(plate)
         end)
     end
 
-    -- 1.36.23: stashed-value alpha/scale reasserts.
-    --
-    -- The `reassert` closure above needs a non-secret `self.unit` to reach
-    -- active[unit] and re-run ApplyOverrides — but retail Midnight 12.x
-    -- arena anonymises enemy pet uf.unit to a secret string, so the
-    -- issecretvalue guard bails and Blizzard's engine SetAlpha(1.0) /
-    -- SetScale(1.0) writes go uncontested.  Net effect: the user's
-    -- per-category opacity/scale sliders (Enemy Hunter/Warlock/DK/Mage
-    -- Pets tabs) silently no-op on the very plates they exist to
-    -- customise.  Hiding still worked because plate.alpha=0 * uf.alpha=1
-    -- still renders as 0 — but any intermediate value like 0.5 got
-    -- stomped on the next distance-fade frame.
-    --
-    -- These stashed-value hooks mirror the existing _reassertAlpha
-    -- pattern below for HealthBarsContainer (line ~723): the target
-    -- value lives on the frame itself, so we don't need to look up
-    -- active[unit] and never care whether the unit token is secret.
-    -- Approx-equal check breaks the write-triggers-reassert-triggers-
-    -- write loop on our own SetAlpha/SetScale calls.
-    local function _reassertStashedAlpha(self, a)
-        pcall(function()
-            local want = self.MyNP_targetAlpha
-            if want == nil then return end
-            if a and math.abs(a - want) < 0.01 then return end
-            self:SetAlpha(want)
-        end)
-    end
-    -- 1.36.24: plate-scale compensation.
-    --
-    -- Blizzard's nameplate engine writes plate:SetScale on the outer
-    -- NamePlateBase for distance-based scaling (nameplateMinScale /
-    -- nameplateMaxScale), target scaling (nameplateSelectedScale),
-    -- global scaling (nameplateGlobalScale / nameplateLargerScale),
-    -- and "important" mob upscaling.  Effective visual plate size =
-    -- plate.scale * uf.scale.  If we just write uf:SetScale(1.5) while
-    -- Blizzard is writing plate:SetScale(0.65) for a distance-faded
-    -- plate, effective render is 0.65 * 1.5 = 0.975 — visually
-    -- indistinguishable from 1.0, so the user's Scale slider silently
-    -- no-op'd on every plate the engine touched (which is all of them).
-    --
-    -- Fix: compensate by computing uf.scale = cat.scale / plate.scale.
-    -- Effective = plate.scale * (cat.scale / plate.scale) = cat.scale,
-    -- regardless of engine's plate.scale writes.  We can't call
-    -- plate:SetScale (PROTECTED in retail Midnight 12.x; addon calls
-    -- trigger ADDON_ACTION_BLOCKED — see ResetPlate comment), but we
-    -- CAN hooksecurefunc it to observe Blizzard's writes and re-
-    -- compensate uf.scale in response.
-    local function _computeUfScaleForTarget(hostPlate, target)
-        if not (hostPlate and target) then return nil end
-        local ps = hostPlate.GetScale and hostPlate:GetScale() or 1.0
-        if not ps or ps <= 0 then return target end
-        return target / ps
-    end
-
-    local function _reassertStashedScale(self, s)
-        pcall(function()
-            local target = self.MyNP_targetScale
-            if target == nil then return end
-            local parent = self.GetParent and self:GetParent()
-            local ufWant = _computeUfScaleForTarget(parent, target) or target
-            if s and math.abs(s - ufWant) < 0.01 then return end
-            self:SetScale(ufWant)
-        end)
-    end
-
-    pcall(hooksecurefunc, uf, "SetAlpha", _reassertStashedAlpha)
-    pcall(hooksecurefunc, uf, "SetScale", _reassertStashedScale)
     pcall(hooksecurefunc, uf, "SetAlpha", reassert)
     pcall(hooksecurefunc, uf, "SetScale", reassert)
-
-    -- 1.36.23: hook the outer NamePlateBase's SetAlpha too.  Blizzard's
-    -- nameplate engine writes plate:SetAlpha for distance-based fade
-    -- (driven by nameplateMinAlpha / nameplateMaxAlpha / nameplateOccluded
-    -- AlphaMult CVars).  Without a hook here, our plate:SetAlpha(0.5)
-    -- writes in ApplyOverrides get stomped on the very next fade tick,
-    -- and effective render (plate.alpha * uf.alpha) drifts back toward 1.
-    if not plate.MyNP_alphaHooked then
-        plate.MyNP_alphaHooked = true
-        pcall(hooksecurefunc, plate, "SetAlpha", _reassertStashedAlpha)
-    end
-
-    -- 1.36.24: OBSERVE (never call) plate:SetScale so we can re-
-    -- compensate uf.scale when Blizzard changes plate.scale for
-    -- distance/target/global fade.  We ONLY call uf:SetScale in the
-    -- callback — never plate:SetScale (protected).  Using pcall on
-    -- the install itself in case a future patch makes plate:SetScale
-    -- unhookable for addons.
-    if not plate.MyNP_scaleObserved then
-        plate.MyNP_scaleObserved = true
-        pcall(hooksecurefunc, plate, "SetScale", function(self, s)
-            pcall(function()
-                local child = self.UnitFrame
-                if not child then return end
-                local target = child.MyNP_targetScale
-                if target == nil then return end
-                local plateScale = s or 1.0
-                if plateScale <= 0 then plateScale = 1.0 end
-                local ufWant = target / plateScale
-                local cur = child.GetScale and child:GetScale() or 1.0
-                if math.abs(cur - ufWant) < 0.01 then return end
-                pcall(child.SetScale, child, ufWant)
-            end)
-        end)
-    end
 
     -- Hook the healthbar's SetStatusBarColor so our friendly-color
     -- override beats Blizzard's CompactUnitFrame_UpdateHealthColor
@@ -917,16 +763,6 @@ local function ResetPlate(plate)
     -- SetAlpha on the top-level plate is still permitted (no
     -- ADDON_ACTION_BLOCKED observed for it) — keep that to clear
     -- any prior alpha=0 we wrote for a hidden category.
-    --
-    -- 1.36.23: clear stashed target values BEFORE SetAlpha/SetScale.
-    -- Blizzard recycles NamePlateBase frames between units — if we
-    -- don't clear MyNP_targetAlpha here, the _reassertStashedAlpha
-    -- hook (installed once per plate, never uninstalled — hooksecurefunc
-    -- is one-way) would keep pinning the OLD unit's alpha value on the
-    -- NEW unit that spawns on this recycled plate.  E.g. a hidden pet
-    -- plate would leave MyNP_targetAlpha=0 stuck, and the next hostile
-    -- player who spawns on this plate would be invisible.
-    plate.MyNP_targetAlpha = nil
     plate:SetAlpha(1.0)
     -- Skip the UnitFrame writes if forbidden — same taint vector as
     -- ApplyOverrides above.  UnitFrame's SetScale is NOT protected
@@ -936,8 +772,6 @@ local function ResetPlate(plate)
     if uf
        and not (plate.IsForbidden and plate:IsForbidden())
        and not (uf.IsForbidden and uf:IsForbidden()) then
-        uf.MyNP_targetAlpha = nil
-        uf.MyNP_targetScale = nil
         uf:SetAlpha(1.0)
         uf:SetScale(1.0)
     end
@@ -1064,9 +898,8 @@ local function _CaptureSummonFromToken(token)
     -- npcID to active[unit].npcID, which broke the per-NPC hide
     -- list (cat.hidden[npcID]) for anonymised plates — once we
     -- reclassified them into enemyDKPets / enemyGuardians / etc.,
-    -- the npcID stayed nil from the initial enemyNPCs fallback
-    -- (was enemyPlayers pre-1.36.25) and `cat.hidden[nil]` always
-    -- returned nil.
+    -- the npcID stayed nil from the initial enemyPlayers fallback
+    -- and `cat.hidden[nil]` always returned nil.
     local guid = UnitGUID(token)
     local guidKind
     local capturedNpcID
@@ -1292,16 +1125,7 @@ local function ClassifyPlate(unit, guidKind, plate)
         if catID then return catID, summonType end
     end
 
-    -- 1.36.25: hostile fallback splits into enemyNPCs (was enemyPlayers).
-    -- Real hostile players are already returned above via the
-    -- UnitIsPlayer branch; anything reaching here is a non-player
-    -- hostile entity — either a regular mob (world NPC, dungeon trash)
-    -- or a summon whose type our IsPlayerSummon/AutoClassify pipeline
-    -- couldn't resolve.  Both belong on the Enemy NPCs tab so the
-    -- user's Enemy Players slider governs only actual players.
-    -- Friendly side is unchanged (already had the friendlyPlayers /
-    -- friendlyNPCs split via a separate CVar on Blizzard's side).
-    return hostile and "enemyNPCs" or "friendlyNPCs"
+    return hostile and "enemyPlayers" or "friendlyNPCs"
 end
 
 ----------------------------------------------------------------------
@@ -1426,87 +1250,6 @@ function ns:GetPlateInfo(unit)
     if not unit then return nil end
     if issecretvalue and issecretvalue(unit) then return nil end
     return active[unit]
-end
-
--- 1.36.25: /mnp cat diagnostic.  Prints the classification pipeline
--- state for the current target or mouseover: what category the plate
--- landed in, what summonType we derived, npcID, and the raw signals
--- each classification gate reads.  Use this to prove/disprove "totems
--- are falling through to Enemy NPCs because IsPlayerSummon missed
--- them" — if the printed category is enemyNPCs when it should be
--- enemyTotems, we know which gate to strengthen in NPC_DATA.
-function ns:DiagCategoryForTarget()
-    local unit
-    if UnitExists("target") then
-        unit = "target"
-    elseif UnitExists("mouseover") then
-        unit = "mouseover"
-    else
-        print("|cff00c0ffMyNamePlates|r cat: no target or mouseover.")
-        return
-    end
-
-    local name    = _SafeName(unit) or "?"
-    local isPlayer = _SafeBool(UnitIsPlayer, unit)
-    local hostile  = not _SafeBool(UnitIsFriend, "player", unit)
-    local npcID, guidKind = GetNPCID(unit)
-    local creatureType    = _SafeCT(unit)
-    local classification  = _SafeClassif(unit)
-    local isMinion        = _SafeBool(UnitIsMinion, unit)
-    local isOthersPet     = _SafeBool(UnitIsOtherPlayersPet, unit)
-    local playerControlled = _SafeBool(UnitPlayerControlled, unit)
-
-    -- Find the live nameplate binding (if any) via the token.  We look
-    -- up by the plate's UnitFrame.unit (which is the nameplate token,
-    -- not the "target"/"mouseover" token we started with).
-    local catID, summonType, plate
-    do
-        local pl = C_NamePlate and C_NamePlate.GetNamePlateForUnit
-                   and C_NamePlate.GetNamePlateForUnit(unit)
-        plate = pl
-        local pUnit = pl and pl.UnitFrame and pl.UnitFrame.unit
-        local info  = pUnit and ns:GetPlateInfo(pUnit)
-        if info then
-            catID      = info.categoryID
-            summonType = info.summonType
-        end
-    end
-
-    -- If the plate isn't currently in the active[] table (e.g. target
-    -- has no visible nameplate), reproduce what ClassifyPlate WOULD
-    -- return for this unit so the diagnostic is still useful.
-    if not catID then
-        local wouldBe = isPlayer and (hostile and "enemyPlayers" or "friendlyPlayers")
-        if not wouldBe then
-            if IsPlayerSummon(unit, guidKind, plate) then
-                local rec = GetNpcRecord(npcID)
-                if rec and rec.type then
-                    summonType = rec.type
-                    wouldBe = ns:CategoryForSummon(summonType, hostile)
-                end
-                if not wouldBe then
-                    local autoType = AutoClassify(unit, guidKind, plate)
-                    summonType = (autoType == "pet") and "pet_hunter" or autoType
-                    wouldBe = summonType and ns:CategoryForSummon(summonType, hostile)
-                end
-            end
-            wouldBe = wouldBe or (hostile and "enemyNPCs" or "friendlyNPCs")
-        end
-        catID = wouldBe
-    end
-
-    local cat = ns.CATEGORY_BY_ID[catID]
-    print(("|cff00c0ffMyNamePlates|r cat: %s"):format(name))
-    print(("  category:      %s  (%s)"):format(cat and cat.label or "?", tostring(catID)))
-    print(("  summonType:    %s"):format(tostring(summonType)))
-    print(("  npcID:         %s   guidKind: %s"):format(tostring(npcID), tostring(guidKind)))
-    print(("  UnitIsPlayer:  %s   hostile:  %s"):format(tostring(isPlayer), tostring(hostile)))
-    print(("  CreatureType:  %s   Classification: %s"):format(tostring(creatureType), tostring(classification)))
-    print(("  UnitIsMinion:  %s   OthersPet: %s   PlayerControlled: %s"):format(
-        tostring(isMinion), tostring(isOthersPet), tostring(playerControlled)))
-    if plate and plate:IsForbidden and plate:IsForbidden() then
-        print("  plate:         (FORBIDDEN — not managed; category is theoretical)")
-    end
 end
 
 function ns:DumpActive()
