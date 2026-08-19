@@ -502,11 +502,11 @@ local function ApplyOverrides(info)
     local isTarget    = info.unit and UnitIsUnit(info.unit, "target")
 
     if isTarget and not isSummonCat then
-        -- Blizzard's nameplateSelectedAlpha CVar (default 1.0) drives
-        -- target alpha.  Only reassert 1.0 if we had previously written
-        -- a non-engine value (hide or per-category override); otherwise
-        -- leave alpha untouched so the user's nameplateSelectedAlpha
-        -- setting actually applies.
+        -- Blizzard's nameplateSelectedAlpha / nameplateSelectedScale
+        -- CVars drive target visuals.  Only reassert defaults (1.0) if
+        -- we had previously written non-engine values (hide or per-
+        -- category override); otherwise leave alpha & scale untouched
+        -- so the user's Selected* CVar settings actually apply.
         if plate.MyNP_alphaOwned then
             plate:SetAlpha(1.0)
             plate.MyNP_alphaOwned = nil
@@ -514,6 +514,10 @@ local function ApplyOverrides(info)
         if uf and uf.MyNP_alphaOwned then
             uf:SetAlpha(1.0)
             uf.MyNP_alphaOwned = nil
+        end
+        if uf and uf.MyNP_scaleOwned then
+            uf:SetScale(1.0)
+            uf.MyNP_scaleOwned = nil
         end
         info._applying = nil
         return
@@ -549,8 +553,27 @@ local function ApplyOverrides(info)
             uf.MyNP_alphaOwned = nil
         end
     end
-    if uf and (isSummonCat or scale ~= 1.0) then
-        uf:SetScale(scale)
+
+    -- 1.36.8: same marker pattern as alpha above, applied to scale.
+    -- Pre-1.36.8 we wrote uf:SetScale(scale) whenever `scale ~= 1.0`,
+    -- but never one-shot restored to 1.0 when the user dragged the
+    -- slider BACK to 1.0.  Result: a plate you'd previously scaled to
+    -- 1.5 stayed at 1.5 forever even after resetting the slider,
+    -- because the gate short-circuited before SetScale could run.
+    -- Summon categories always write their scale (isSummonCat branch)
+    -- so their scale can go arbitrarily; other categories only write
+    -- when the user has customised away from 1.0, otherwise Blizzard's
+    -- distance-based scale (nameplateMinScale / nameplateMaxScale /
+    -- nameplateLargerScale / nameplateSelectedScale / nameplateGlobalScale)
+    -- drives visuals as intended.
+    if uf then
+        if isSummonCat or scale ~= 1.0 then
+            uf:SetScale(scale)
+            uf.MyNP_scaleOwned = true
+        elseif uf.MyNP_scaleOwned then
+            uf:SetScale(1.0)
+            uf.MyNP_scaleOwned = nil
+        end
     end
 
     -- Cosmetic indicators (target arrow, healer cross) — live in
