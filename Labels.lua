@@ -201,10 +201,26 @@ local function _ClassifyTotem(unit, plate)
         local rec = _NpcRecord(npcID)
         if rec then
             local icon
+            -- Primary: C_Spell.GetSpellTexture(spellID).  Fast path and
+            -- handles the common case.
             if rec.spellID and C_Spell and C_Spell.GetSpellTexture then
                 local okI, tex = pcall(C_Spell.GetSpellTexture, rec.spellID)
                 if okI and tex and not (issecretvalue and issecretvalue(tex)) then
                     icon = tex
+                end
+            end
+            -- 1.36.9: fallback to C_Spell.GetSpellInfo(spellID).iconID.
+            -- Some PvP-talent totem spellIDs (Static Field, Counterstrike,
+            -- Voodoo, Lightning Surge, etc.) return nil from
+            -- GetSpellTexture when the local player isn't a shaman with
+            -- the talent selected — even though the spell exists in the
+            -- game data.  GetSpellInfo reads a broader table and
+            -- succeeds where GetSpellTexture doesn't.
+            if not icon and rec.spellID and C_Spell and C_Spell.GetSpellInfo then
+                local okS, spellInfo = pcall(C_Spell.GetSpellInfo, rec.spellID)
+                if okS and type(spellInfo) == "table" and spellInfo.iconID
+                   and not (issecretvalue and issecretvalue(spellInfo.iconID)) then
+                    icon = spellInfo.iconID
                 end
             end
             -- rec.icon = explicit texture path override (rare; used for
@@ -219,6 +235,20 @@ local function _ClassifyTotem(unit, plate)
                 end
                 local gr, gg, gb = _GenericColorRGB()
                 return icon, gr, gg, gb, false, false, nil, false
+            end
+            -- 1.36.9: NpcData record exists but icon resolution failed
+            -- (deprecated spellID, spell not loaded, etc.).  Preserve
+            -- the `important` flag so the plate still gets the arena
+            -- classification treatment (magenta color + glow + pulse)
+            -- even though we have to show the generic icon.  Pre-1.36.9
+            -- we fell through to the cast/channel/aura path here which
+            -- returned isImportant=false + neutral color, losing the
+            -- classification cue entirely for arena-critical totems
+            -- whose spellIDs happened to be unresolvable on the client.
+            if rec.important then
+                return TOTEM_ICON_GENERIC,
+                       TOTEM_COLOR_IMPORTANT[1], TOTEM_COLOR_IMPORTANT[2], TOTEM_COLOR_IMPORTANT[3],
+                       true, false, nil, false
             end
         end
     end
@@ -400,6 +430,23 @@ local function _TotemIconType(plate, unit)
     if not st then
         local info = ns.GetSummonInfoForUnit and ns:GetSummonInfoForUnit(unit)
         st = info and info.summonType
+    end
+    -- 1.36.9: fall back to NpcData's authoritative type BEFORE defaulting
+    -- to "totem".  Fixes a bug where anonymised arena pets whose summon-
+    -- type capture was empty (common on Warlock Observer / Felguard,
+    -- Hunter pets, etc.) would default to "totem" and get the totem
+    -- icon treatment applied on top of them.  With this lookup, an
+    -- Observer plate returns "pet_warlock" and gets correctly filtered
+    -- out by the default cfg.types.pet_warlock = false gate — no
+    -- more Observer plates wearing the generic totem-recall icon.
+    if not st then
+        local npcID = _ResolvePlateNpcID(plate, unit)
+        if npcID then
+            local rec = _NpcRecord(npcID)
+            if rec and rec.type then
+                st = rec.type
+            end
+        end
     end
     return st or "totem"   -- unknown-type summons default to "totem" for gating
 end
