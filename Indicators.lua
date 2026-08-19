@@ -1275,6 +1275,24 @@ function ns:RefreshHealerCrosses()
                 local prep = ns.ARENA_PREP[i]
                 if not prep then return end
                 local plate = ns.GetPlateByArena and ns:GetPlateByArena(i)
+                -- 1.36.17: gate-open path.  _plateByArena is populated
+                -- ONLY by definitive UnitIsUnit hits (target/focus/
+                -- mouseover / RescanDirect) — which don't fire in
+                -- retail Midnight 12.x for anonymised arena plates at
+                -- gate open.  But ArenaMap's fingerprint match (BBP
+                -- arenaid.lua port) DOES bind plate <-> arena slot at
+                -- gate open, and the spec-label path already trusts
+                -- that binding via GetArenaUnitForPlate (which reads
+                -- AM.plateToIndex).  Since the user's spec labels are
+                -- correct out of the gate, the same fingerprint map
+                -- is trustworthy enough for the healer cross too.
+                -- Fall back to AM's reverse map so the cross uses the
+                -- SAME source of truth as the spec label — if the
+                -- spec on that plate reads "Restoration Shaman", the
+                -- cross MUST land on that same plate.
+                if not plate and AM and AM.indexToPlate then
+                    plate = AM.indexToPlate[i]
+                end
                 if not plate and prep.classFile and classCount[prep.classFile] == 1
                    and C_NamePlate and C_NamePlate.GetNamePlates then
                     for _, p in ipairs(C_NamePlate.GetNamePlates(true)) do
