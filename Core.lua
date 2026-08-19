@@ -682,6 +682,51 @@ f:SetScript("OnEvent", function(_, event, arg1)
             end
             MyNamePlatesDB._plateBarHeightMigrated = true
         end
+
+        -- 1.36.25 one-shot migration: enemyPlayers split.  Prior versions
+        -- had a single "Enemy Players & NPCs" master (id "enemyPlayers")
+        -- that governed scale/alpha for both real hostile players AND
+        -- every hostile NPC / unclassified summon.  1.36.25 splits the
+        -- NPC/summon fallback into a new enemyNPCs category (see
+        -- Categories.lua).  Without migration, users who had tuned the
+        -- old catch-all (e.g. alpha 0.6 to dim mobs) would see all NPC
+        -- plates snap back to 1.0/1.0 defaults on first login post-
+        -- update while their enemyPlayers slider values (now players
+        -- only) were preserved.  That reads as "the mod broke".
+        --
+        -- Fix: copy the pre-split enemyPlayers scale, alpha, hidden,
+        -- highlighted, and highlightColor into the newly created
+        -- enemyNPCs entry.  Existing NPC plate appearance therefore
+        -- stays identical to how it looked before the split; users can
+        -- then split them apart at their leisure by editing either tab.
+        -- The `enabled` field is left at its own default (both start
+        -- enabled) since enemyPlayers's CVar-driven visibility isn't
+        -- meaningful for the CVar-less enemyNPCs category.
+        --
+        -- MergeDefaults above already created enemyNPCs at defaults, so
+        -- we detect a fresh split by checking the version flag rather
+        -- than "did enemyNPCs exist" (it always does now).
+        if not MyNamePlatesDB._enemyNpcSplitMigrated then
+            local ep = MyNamePlatesDB.categories and MyNamePlatesDB.categories.enemyPlayers
+            local en = MyNamePlatesDB.categories and MyNamePlatesDB.categories.enemyNPCs
+            if ep and en then
+                en.scale       = ep.scale or en.scale
+                en.alpha       = ep.alpha or en.alpha
+                if ep.hidden then
+                    en.hidden = en.hidden or {}
+                    for k, v in pairs(ep.hidden) do en.hidden[k] = v end
+                end
+                if ep.highlighted then
+                    en.highlighted = en.highlighted or {}
+                    for k, v in pairs(ep.highlighted) do en.highlighted[k] = v end
+                end
+                if ep.highlightColor then
+                    en.highlightColor = { ep.highlightColor[1], ep.highlightColor[2],
+                                          ep.highlightColor[3], ep.highlightColor[4] }
+                end
+            end
+            MyNamePlatesDB._enemyNpcSplitMigrated = true
+        end
     elseif event == "PLAYER_LOGIN" then
         ns:ApplyAll()
     elseif event == "PLAYER_ENTERING_WORLD" then

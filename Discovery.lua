@@ -291,10 +291,12 @@ local function AutoClassify(unit, guidKind, plate)
 
     -- NOTHING readable AND not minion-shaped.  Return nil so the
     -- caller (ClassifyPlate) falls through to the generic
-    -- `enemyPlayers` bucket, ApplyOverrides bails on the "no cat"
-    -- path, and Blizzard's default render runs untouched.  When the
-    -- user mouseovers / targets the unit, _CaptureSummonFromToken
-    -- re-runs Manage with the real type from the non-secret token.
+    -- `enemyNPCs` / `friendlyNPCs` bucket (renamed in 1.36.25 —
+    -- enemyPlayers used to also be the hostile catch-all).
+    -- ApplyOverrides bails on the "no cat" path, and Blizzard's
+    -- default render runs untouched.  When the user mouseovers /
+    -- targets the unit, _CaptureSummonFromToken re-runs Manage with
+    -- the real type from the non-secret token.
     return nil
 end
 
@@ -432,8 +434,9 @@ local function ApplyOverrides(info)
     --
     -- Why that broke in 1.32.4: when target/mouseover capture
     -- (_CaptureSummonFromToken) reclassifies a plate post-spawn from
-    -- "enemyPlayers" (the anonymised-fallback catch-all) into its
-    -- real summon category like "enemyGuardians", the plate is
+    -- "enemyNPCs" (the anonymised-fallback catch-all — was
+    -- "enemyPlayers" pre-1.36.25) into its real summon category
+    -- like "enemyGuardians", the plate is
     -- ALREADY VISIBLE.  The CVar only prevents future spawns; it
     -- doesn't despawn or hide an existing plate.  Without an
     -- alpha-0 enforcement, the user toggling "Enemy Guardians" off
@@ -1062,8 +1065,9 @@ local function _CaptureSummonFromToken(token)
     -- npcID to active[unit].npcID, which broke the per-NPC hide
     -- list (cat.hidden[npcID]) for anonymised plates — once we
     -- reclassified them into enemyDKPets / enemyGuardians / etc.,
-    -- the npcID stayed nil from the initial enemyPlayers fallback
-    -- and `cat.hidden[nil]` always returned nil.
+    -- the npcID stayed nil from the initial enemyNPCs fallback
+    -- (was enemyPlayers pre-1.36.25) and `cat.hidden[nil]` always
+    -- returned nil.
     local guid = UnitGUID(token)
     local guidKind
     local capturedNpcID
@@ -1289,7 +1293,17 @@ local function ClassifyPlate(unit, guidKind, plate)
         if catID then return catID, summonType end
     end
 
-    return hostile and "enemyPlayers" or "friendlyNPCs"
+    -- 1.36.25: hostile fallback splits into enemyNPCs (was enemyPlayers).
+    -- Real hostile players are already returned above via the
+    -- UnitIsPlayer branch; anything reaching here is a non-player
+    -- hostile entity — either a regular mob (target dummy, world NPC,
+    -- dungeon trash) or a summon whose type our IsPlayerSummon /
+    -- AutoClassify pipeline couldn't resolve.  Both belong on the
+    -- Enemy NPCs tab so the Enemy Players slider governs only actual
+    -- players.  Friendly side is unchanged (already had the
+    -- friendlyPlayers / friendlyNPCs split via a separate CVar on
+    -- Blizzard's side).
+    return hostile and "enemyNPCs" or "friendlyNPCs"
 end
 
 ----------------------------------------------------------------------

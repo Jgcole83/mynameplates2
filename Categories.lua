@@ -72,9 +72,36 @@ ns.CATEGORIES = {
       blurb = "Smaller summoned units (Wild Imps, Dreadstalkers, Observers, etc.)." },
 
     -- ── Enemy ─────────────────────────────────────────────────────────────
-    { id = "enemyPlayers",        label = "Enemy Players & NPCs",
+    -- 1.36.25: split from the old single "Enemy Players & NPCs" master
+    -- into two independent categories.  Real hostile players land in
+    -- enemyPlayers; regular hostile NPCs (world/dungeon mobs, target
+    -- dummies) AND any summon whose type IsPlayerSummon/AutoClassify
+    -- couldn't identify (anonymised arena totems where every signal
+    -- returned secret, etc.) land in enemyNPCs.  Each gets its own
+    -- Scale/Alpha slider.
+    --
+    -- Blizzard exposes only one master CVar for hostile nameplate
+    -- visibility (nameplateShowEnemies) so we attach it to
+    -- enemyPlayers.  Toggling enemyPlayers off writes the CVar and
+    -- also suppresses NPC plates (that's Blizzard's design).  The
+    -- enemyNPCs "enabled" toggle uses the cvar-less per-plate hide
+    -- path (same mechanism friendlyHunterPets et al. already use)
+    -- so users can hide NPCs while keeping players visible.
+    --
+    -- Migration: users upgrading from ≤1.36.24 have their old
+    -- enemyPlayers scale/alpha/hidden/highlighted copied to enemyNPCs
+    -- on first login (Core.lua _enemyNpcSplitMigrated flag) so their
+    -- tuned appearance stays consistent — nothing visually changes
+    -- until the user opens the new tab and edits it separately.
+    { id = "enemyPlayers",        label = "Enemy Players",
       kind = "master", cvar = "nameplateShowEnemies",
-      hostile = true,  defaultEnabled = "1" },
+      hostile = true,  defaultEnabled = "1",
+      blurb = "Real hostile players only.  The CVar toggle here (nameplateShowEnemies) is Blizzard's master switch and also gates NPC plates -- turn Enemy NPCs off separately if you only want to hide NPCs.  Target dummies and normal mobs are governed by the Enemy NPCs tab." },
+
+    { id = "enemyNPCs",           label = "Enemy NPCs",
+      kind = "master", cvar = nil,
+      hostile = true,  defaultEnabled = "1",
+      blurb = "Regular hostile NPCs (target dummies, world mobs, dungeon trash, etc.) AND any summon whose specific type we couldn't identify.  Enemy Players has its own tab above." },
 
     { id = "enemyPets",           label = "Enemy Pets (master)",
       kind = "master", cvar = "nameplateShowEnemyPets",
