@@ -500,17 +500,31 @@ ns.HEALER_SPECS = {
 -- guaranteed to be ready before PLAYER_LOGIN.  Pattern borrowed from
 -- BBP's GetLocalizedSpecs.
 ns.HEALER_SPEC_NAMES = nil
+-- 1.36.14: parallel set of just the localized spec NAMES ("Discipline",
+-- "Restoration", "Holy", "Preservation", "Mistweaver") without the
+-- appended class token.  Every one of these spec names is unique to
+-- healer specs (Restoration is Druid+Shaman, both healers; Holy is
+-- Priest+Paladin, both healers; the rest are class-unique).  Used to
+-- classify a plate as a healer purely by the cached per-plate spec
+-- name from Labels.lua's _specByPlate — which is what
+-- _GetSpecByTooltip returns (spec name only, no class).  This lets
+-- the healer cross ride the same authoritative signal as the spec
+-- label, bypassing ArenaMap entirely.
+ns.HEALER_SPEC_ONLY_NAMES = nil
 local function _BuildHealerSpecNames()
     if ns.HEALER_SPEC_NAMES then return end
     local names = {}
+    local specOnly = {}
     if not GetSpecializationInfoByID then
-        ns.HEALER_SPEC_NAMES = names
+        ns.HEALER_SPEC_NAMES      = names
+        ns.HEALER_SPEC_ONLY_NAMES = specOnly
         return
     end
     for specID in pairs(ns.HEALER_SPECS) do
         local ok, _, specName, _, _, _, _, classFile =
             pcall(GetSpecializationInfoByID, specID)
         if ok and specName and classFile then
+            if specName ~= "" then specOnly[specName] = specID end
             local male   = LOCALIZED_CLASS_NAMES_MALE   and LOCALIZED_CLASS_NAMES_MALE[classFile]
             local female = LOCALIZED_CLASS_NAMES_FEMALE and LOCALIZED_CLASS_NAMES_FEMALE[classFile]
             if male   then names[specName .. " " .. male]   = specID end
@@ -519,8 +533,10 @@ local function _BuildHealerSpecNames()
             end
         end
     end
-    ns.HEALER_SPEC_NAMES = names
+    ns.HEALER_SPEC_NAMES      = names
+    ns.HEALER_SPEC_ONLY_NAMES = specOnly
 end
+ns.BuildHealerSpecNames = _BuildHealerSpecNames
 
 -- GUID -> bool cache so we don't tooltip-scan the same unit forever.
 local healerCache = {}
@@ -986,42 +1002,57 @@ function ns:RefreshHealerCrosses()
         end
     end
 
-    -- 1.36.13: DIRECT ARENA-SLOT loop.  Iterate arena1..3 tokens
-    -- and — for each slot whose GetArenaOpponentSpec is in
-    -- HEALER_SPECS — find that unit's plate via Blizzard's
-    -- authoritative C_NamePlate.GetNamePlateForUnit("arenaN") and
-    -- stamp the cross there.  This path bypasses ArenaMap's
-    -- fingerprint match entirely, so it recovers the healer cross
-    -- on ambiguous-team arenas where the plate-walk fallback
-    -- below fails because ArenaMap mis-tagged the healer's plate
-    -- to a different opponent's slot (typical trigger: two mana-
-    -- using opponents with anonymised class fields).
+    -- 1.36.14: PER-PLATE SPEC CACHE path (highest confidence).
+    -- v1.36.13 tried a direct arena1..3 loop, but in retail
+    -- Midnight 12.x `UnitExists("arenaN")` returns false for
+    -- anonymised enemy tokens and `C_NamePlate.GetNamePlateForUnit
+    -- ("arenaN")` returns nil for the same — so that path could
+    -- never reach _ApplyHealerMarkerOnPlate.  This replacement
+    -- uses the ONE signal we know is authoritative for the plate
+    -- the user actually sees: the per-plate spec name cache
+    -- populated by Labels.lua's _CaptureSpecFromToken from the
+    -- non-secret target/mouseover tooltip.  If the cached spec
+    -- name is a healer spec (Discipline, Restoration, Holy,
+    -- Preservation, Mistweaver — all unique to healers), the
+    -- plate is unambiguously the healer.  Stamp the cross.
     --
-    -- Runs BEFORE the plate-walk so:
-    --   1. If the direct path finds the healer, the cross is on
-    --      the correct plate immediately.
-    --   2. The plate-walk still runs and may double-stamp if
-    --      ArenaMap happens to be correct — same plate, idempotent.
-    --   3. If the direct path fails (arena unit doesn't exist yet,
-    --      C_NamePlate can't resolve, etc.), plate-walk is the
-    --      long-standing fallback.
+    -- This piggybacks on the same fix that made the spec label
+    -- render correctly: once the user has interacted with the
+    -- healer once, both the correct spec text AND the healer
+    -- cross land on the correct plate for the rest of the match.
+    -- No arena-token dependency, no ArenaMap dependency.
     --
-    -- Every call is pcall-wrapped so a failure inside the loop
-    -- (e.g. a Blizzard API change) can't abort the fallback below.
-    if _IsInArena()
-       and I.healerEnemy and I.healerEnemy.enabled == "1"
-       and GetArenaOpponentSpec and ns.HEALER_SPECS
-       and C_NamePlate and C_NamePlate.GetNamePlateForUnit then
-        for i = 1, 3 do
-            pcall(function()
-                local arenaUnit = "arena" .. i
-                if not UnitExists(arenaUnit) then return end
-                local specID = GetArenaOpponentSpec(i)
-                if not (specID and ns.HEALER_SPECS[specID]) then return end
-                local plate = C_NamePlate.GetNamePlateForUnit(arenaUnit, true)
-                if not plate then return end
-                _ApplyHealerMarkerOnPlate(plate, false, I.healerEnemy)
-            end)
+    -- Runs BEFORE the plate-walk so a definitive per-plate hit
+    -- lands first; the plate-walk still runs after as the pre-
+    -- 1.36.13 fallback for the "user has never targeted the
+    -- healer" edge case (relies on ArenaMap and can be wrong).
+    if I.healerEnemy and I.healerEnemy.enabled == "1"
+       and ns.GetSpecByPlate and C_NamePlate and C_NamePlate.GetNamePlates then
+        pcall(_BuildHealerSpecNames)
+        local specOnly = ns.HEALER_SPEC_ONLY_NAMES
+        if specOnly then
+            for _, plate in ipairs(C_NamePlate.GetNamePlates(true)) do
+                pcall(function()
+                    local uf   = plate.UnitFrame
+                    local unit = uf and (uf.unit or uf.displayedUnit)
+                    -- Only enemies.  Friendly plates already had
+                    -- their cross applied by the party1..4 loop
+                    -- above; a friendly healer landing in the
+                    -- per-plate cache would otherwise get the
+                    -- enemy-red variant here.  UnitIsFriend is
+                    -- pcall-guarded because on rare edge cases
+                    -- (anonymised secret unit token) it can taint
+                    -- if called directly.
+                    if unit then
+                        local ok, f = pcall(UnitIsFriend, "player", unit)
+                        if ok and f then return end
+                    end
+                    local cached = ns:GetSpecByPlate(plate)
+                    if cached and specOnly[cached] then
+                        _ApplyHealerMarkerOnPlate(plate, false, I.healerEnemy)
+                    end
+                end)
+            end
         end
     end
 
