@@ -624,33 +624,38 @@ end)
 
 ----------------------------------------------------------------------
 -- Texture creation (lazy, once per plate)
+--
+-- v1.36.11: previously we bailed early whenever plate:IsForbidden() or
+-- uf:IsForbidden() returned true, on the assumption that
+-- CreateTexture on a forbidden frame would propagate taint and produce
+-- "Interface action failed because of an AddOn" errors.  That's what
+-- caused the enemy healer cross to never appear on arena enemy plates
+-- (whose UnitFrames are flagged forbidden in retail Midnight 12.x).
+--
+-- BetterBlizzPlates creates textures directly on the same forbidden
+-- arena plates (see retail/modules/healer.lua + BBP.lua bbpOverlay
+-- creation) without any guard and works fine.  Blizzard's taint model
+-- treats textures as non-secure widgets, so parenting one to a
+-- forbidden frame does not taint it — only secure-write-through
+-- operations do.  We wrap creation + configuration in pcall as
+-- defensive belt-and-braces in case a future Midnight patch does
+-- restrict certain plates entirely.
 ----------------------------------------------------------------------
 local function _NewMarker(uf, atlas)
-    local tex = uf:CreateTexture(nil, "OVERLAY", nil, 7)
-    tex:SetAtlas(atlas)
-    tex:Hide()
+    local ok, tex = pcall(uf.CreateTexture, uf, nil, "OVERLAY", nil, 7)
+    if not ok or not tex then return nil end
+    pcall(tex.SetAtlas, tex, atlas)
+    pcall(tex.Hide, tex)
     return tex
-end
-
--- Skip forbidden plates everywhere we'd parent a widget to the uf.
--- CreateTexture as a child of a forbidden frame propagates addon
--- taint to the parent and produces "Interface action failed because
--- of an AddOn" on every subsequent secure action against arena
--- enemies.  Returns true when the plate must NOT be touched.
-local function _IsForbidden(plate, uf)
-    if plate and plate.IsForbidden and plate:IsForbidden() then return true end
-    if uf    and uf.IsForbidden    and uf:IsForbidden()    then return true end
-    return false
 end
 
 local function _GetTarget(plate)
     if plate.MyNP_TargetMarker then return plate.MyNP_TargetMarker end
     local uf = plate.UnitFrame
     if not uf then return nil end
-    if _IsForbidden(plate, uf) then return nil end
-    -- Down-pointing tracking arrow (Blizzard atlas, same as BBP uses).
     local tex = _NewMarker(uf, "Navigation-Tracked-Arrow")
-    tex:SetSize(14, 9)
+    if not tex then return nil end
+    pcall(tex.SetSize, tex, 14, 9)
     plate.MyNP_TargetMarker = tex
     return tex
 end
@@ -659,11 +664,11 @@ local function _GetHealer(plate)
     if plate.MyNP_HealerMarker then return plate.MyNP_HealerMarker end
     local uf = plate.UnitFrame
     if not uf then return nil end
-    if _IsForbidden(plate, uf) then return nil end
     local tex = _NewMarker(uf, "greencross")
-    tex:SetSize(14, 14)
+    if not tex then return nil end
+    pcall(tex.SetSize, tex, 14, 14)
     -- Trim away ugly white pixels around the atlas border.
-    tex:SetTexCoord(0.1953125, 0.8046875, 0.1953125, 0.8046875)
+    pcall(tex.SetTexCoord, tex, 0.1953125, 0.8046875, 0.1953125, 0.8046875)
     plate.MyNP_HealerMarker = tex
     return tex
 end
@@ -680,9 +685,10 @@ local function _GetClassIcon(plate)
     if plate.MyNP_ClassMarker then return plate.MyNP_ClassMarker end
     local uf = plate.UnitFrame
     if not uf then return nil end
-    if _IsForbidden(plate, uf) then return nil end
-    local tex = uf:CreateTexture(nil, "OVERLAY", nil, 7)
-    tex:SetSize(22, 22)        -- base size; user scale multiplies on top
+    -- v1.36.11: forbidden guard removed — see comment above _NewMarker.
+    local ok, tex = pcall(uf.CreateTexture, uf, nil, "OVERLAY", nil, 7)
+    if not ok or not tex then return nil end
+    pcall(tex.SetSize, tex, 22, 22)   -- base size; user scale multiplies on top
     -- Decouple from the UnitFrame's alpha animations (target-fade,
     -- in-combat alpha, distance fade).  Without this, the engine's
     -- animator can briefly drive parent alpha to 0/intermediate values
@@ -690,7 +696,7 @@ local function _GetClassIcon(plate)
     if tex.SetIgnoreParentAlpha then
         pcall(tex.SetIgnoreParentAlpha, tex, true)
     end
-    tex:Hide()
+    pcall(tex.Hide, tex)
     plate.MyNP_ClassMarker = tex
     return tex
 end
@@ -974,13 +980,40 @@ function ns:RefreshHealerCrosses()
         end
     end
 
-    -- Enemy healers — walk plates and resolve via per-plate uf.unit
-    -- with ArenaMap fallback.  This gives a strict 1:1 plate-to-unit
-    -- mapping so the healer cross always lands on the correct plate,
-    -- and the ArenaMap fallback recovers info from forbidden plates
-    -- whose uf.unit is anonymized in retail Midnight arenas.
+    -- Enemy healers — direct arena path FIRST.  In retail Midnight
+    -- 12.x, enemy plates in arena are forbidden and their uf.unit is
+    -- anonymized, which used to hide the cross entirely because
+    -- (a) _GetHealer bailed on forbidden plates (fixed v1.36.11) and
+    -- (b) the plate-walk relied on ArenaMap fingerprint matching to
+    --     re-associate the anonymized plate with an arenaN token.
+    -- The most direct path is to iterate arena1..3, check
+    -- GetArenaOpponentSpec against the healer-spec table, then ask
+    -- C_NamePlate.GetNamePlateForUnit("arenaN", true) for the plate.
+    -- The `true` arg tells Blizzard to include forbidden plates in the
+    -- lookup, and it uses UnitIsUnit internally so it handles the
+    -- anonymized token transparently.  This runs BEFORE the plate-walk
+    -- fallback so the direct hit lands first and doesn't need
+    -- ArenaMap to have finished resolving yet.
     if I.healerEnemy and I.healerEnemy.enabled == "1"
        and C_NamePlate.GetNamePlates then
+        if _IsInArena() and GetArenaOpponentSpec and C_NamePlate.GetNamePlateForUnit then
+            for i = 1, 3 do
+                local ok, specID = pcall(GetArenaOpponentSpec, i)
+                if ok and specID and ns.HEALER_SPECS[specID] then
+                    local arenaUnit = "arena" .. i
+                    if UnitExists(arenaUnit) then
+                        local plate = C_NamePlate.GetNamePlateForUnit(arenaUnit, true)
+                        if plate then
+                            _ApplyHealerMarkerOnPlate(plate, false, I.healerEnemy)
+                        end
+                    end
+                end
+            end
+        end
+
+        -- Plate-walk fallback for battlegrounds, world PvP, and any
+        -- arena plate the direct path missed (e.g. arena unit exists
+        -- but Blizzard's internal plate map hasn't linked it yet).
         for _, plate in ipairs(C_NamePlate.GetNamePlates(true)) do
             _healerLoopState.plate = plate
             pcall(_HealerEnemyBody)
