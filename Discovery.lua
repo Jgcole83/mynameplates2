@@ -477,9 +477,14 @@ local function ApplyOverrides(info)
     -- previously hid then re-enabled.  `uf` is already in scope from the
     -- forbidden-frame bail above.
     if hidden then
+        -- 1.36.23: stash target BEFORE writing so the stashed-alpha
+        -- reassert hook in HookUnitFrame keeps the value pinned against
+        -- Blizzard's engine reasserts (distance/selection alpha).
+        plate.MyNP_targetAlpha = 0
         plate:SetAlpha(0)
         plate.MyNP_alphaOwned = true
         if uf then
+            uf.MyNP_targetAlpha = 0
             uf:SetAlpha(0)
             uf.MyNP_alphaOwned = true
         end
@@ -507,15 +512,23 @@ local function ApplyOverrides(info)
         -- we had previously written non-engine values (hide or per-
         -- category override); otherwise leave alpha & scale untouched
         -- so the user's Selected* CVar settings actually apply.
+        --
+        -- 1.36.23: clear stashed targets BEFORE the SetAlpha/SetScale
+        -- write.  If we cleared after, the hook (which fires DURING
+        -- SetAlpha) would see the still-stashed 0.5 and immediately
+        -- rewrite it, defeating the target-visibility handoff.
         if plate.MyNP_alphaOwned then
+            plate.MyNP_targetAlpha = nil
             plate:SetAlpha(1.0)
             plate.MyNP_alphaOwned = nil
         end
         if uf and uf.MyNP_alphaOwned then
+            uf.MyNP_targetAlpha = nil
             uf:SetAlpha(1.0)
             uf.MyNP_alphaOwned = nil
         end
         if uf and uf.MyNP_scaleOwned then
+            uf.MyNP_targetScale = nil
             uf:SetScale(1.0)
             uf.MyNP_scaleOwned = nil
         end
@@ -537,18 +550,34 @@ local function ApplyOverrides(info)
     -- SetAlpha reassert hook), which is why the "Minimum / Maximum
     -- Alpha" sliders on the General tab silently no-op'd.
     if alpha < 1.0 then
+        -- 1.36.23: stash target BEFORE SetAlpha.  Enemy pet plates in
+        -- retail Midnight 12.x arena have anonymised uf.unit tokens, so
+        -- the reassert() closure below bails on issecretvalue and can't
+        -- re-run ApplyOverrides when the engine stomps our value.  The
+        -- MyNP_targetAlpha stash lets the _reassertStashedAlpha hook
+        -- (installed by HookUnitFrame) pin the alpha regardless of
+        -- unit-token secrecy.  Before this fix, the user's per-category
+        -- opacity slider silently no-op'd on exactly the plates it was
+        -- meant for (Enemy Hunter/Warlock/DK/Mage Pets).
+        plate.MyNP_targetAlpha = alpha
         plate:SetAlpha(alpha)
         plate.MyNP_alphaOwned = true
         if uf then
+            uf.MyNP_targetAlpha = alpha
             uf:SetAlpha(alpha)
             uf.MyNP_alphaOwned = true
         end
     elseif plate.MyNP_alphaOwned then
         -- One-shot restore: hand control back to the engine.  Blizzard's
         -- next distance-alpha tick will overwrite this value.
+        --
+        -- 1.36.23: clear the stashed target BEFORE SetAlpha so the
+        -- reassert hook doesn't immediately re-pin the old value.
+        plate.MyNP_targetAlpha = nil
         plate:SetAlpha(1.0)
         plate.MyNP_alphaOwned = nil
         if uf and uf.MyNP_alphaOwned then
+            uf.MyNP_targetAlpha = nil
             uf:SetAlpha(1.0)
             uf.MyNP_alphaOwned = nil
         end
@@ -568,9 +597,30 @@ local function ApplyOverrides(info)
     -- drives visuals as intended.
     if uf then
         if isSummonCat or scale ~= 1.0 then
-            uf:SetScale(scale)
+            -- 1.36.24: plate-scale compensated write.
+            --
+            -- Pre-1.36.24 we wrote uf:SetScale(cat.scale) directly.
+            -- That silently no-op'd because effective plate size =
+            -- plate.scale * uf.scale, and Blizzard's engine writes
+            -- plate:SetScale for distance / target / global fade all
+            -- the time.  E.g. a distance-faded plate has plate.scale
+            -- 0.65; our uf:SetScale(1.5) gave effective 0.975 —
+            -- indistinguishable from 1.0 by eye, so the Scale slider
+            -- looked broken.  See HookUnitFrame comment above for the
+            -- full mechanism.
+            --
+            -- Fix: divide by current plate.scale so effective =
+            -- plate.scale * (cat.scale / plate.scale) = cat.scale.
+            -- The plate:SetScale observer hook (also in HookUnitFrame)
+            -- re-runs this same compensation whenever the engine
+            -- changes plate.scale, keeping visual size pinned.
+            uf.MyNP_targetScale = scale
+            local plateScale = plate.GetScale and plate:GetScale() or 1.0
+            if not plateScale or plateScale <= 0 then plateScale = 1.0 end
+            uf:SetScale(scale / plateScale)
             uf.MyNP_scaleOwned = true
         elseif uf.MyNP_scaleOwned then
+            uf.MyNP_targetScale = nil
             uf:SetScale(1.0)
             uf.MyNP_scaleOwned = nil
         end
@@ -646,8 +696,110 @@ local function HookUnitFrame(plate)
         end)
     end
 
+    -- 1.36.23: stashed-value alpha/scale reasserts.
+    --
+    -- The `reassert` closure above needs a non-secret `self.unit` to reach
+    -- active[unit] and re-run ApplyOverrides — but retail Midnight 12.x
+    -- arena anonymises enemy pet uf.unit to a secret string, so the
+    -- issecretvalue guard bails and Blizzard's engine SetAlpha(1.0) /
+    -- SetScale(1.0) writes go uncontested.  Net effect: the user's
+    -- per-category opacity/scale sliders (Enemy Hunter/Warlock/DK/Mage
+    -- Pets tabs) silently no-op on the very plates they exist to
+    -- customise.  Hiding still worked because plate.alpha=0 * uf.alpha=1
+    -- still renders as 0 — but any intermediate value like 0.5 got
+    -- stomped on the next distance-fade frame.
+    --
+    -- These stashed-value hooks mirror the existing _reassertAlpha
+    -- pattern below for HealthBarsContainer (line ~723): the target
+    -- value lives on the frame itself, so we don't need to look up
+    -- active[unit] and never care whether the unit token is secret.
+    -- Approx-equal check breaks the write-triggers-reassert-triggers-
+    -- write loop on our own SetAlpha/SetScale calls.
+    local function _reassertStashedAlpha(self, a)
+        pcall(function()
+            local want = self.MyNP_targetAlpha
+            if want == nil then return end
+            if a and math.abs(a - want) < 0.01 then return end
+            self:SetAlpha(want)
+        end)
+    end
+    -- 1.36.24: plate-scale compensation.
+    --
+    -- Blizzard's nameplate engine writes plate:SetScale on the outer
+    -- NamePlateBase for distance-based scaling (nameplateMinScale /
+    -- nameplateMaxScale), target scaling (nameplateSelectedScale),
+    -- global scaling (nameplateGlobalScale / nameplateLargerScale),
+    -- and "important" mob upscaling.  Effective visual plate size =
+    -- plate.scale * uf.scale.  If we just write uf:SetScale(1.5) while
+    -- Blizzard is writing plate:SetScale(0.65) for a distance-faded
+    -- plate, effective render is 0.65 * 1.5 = 0.975 — visually
+    -- indistinguishable from 1.0, so the user's Scale slider silently
+    -- no-op'd on every plate the engine touched (which is all of them).
+    --
+    -- Fix: compensate by computing uf.scale = cat.scale / plate.scale.
+    -- Effective = plate.scale * (cat.scale / plate.scale) = cat.scale,
+    -- regardless of engine's plate.scale writes.  We can't call
+    -- plate:SetScale (PROTECTED in retail Midnight 12.x; addon calls
+    -- trigger ADDON_ACTION_BLOCKED — see ResetPlate comment), but we
+    -- CAN hooksecurefunc it to observe Blizzard's writes and re-
+    -- compensate uf.scale in response.
+    local function _computeUfScaleForTarget(hostPlate, target)
+        if not (hostPlate and target) then return nil end
+        local ps = hostPlate.GetScale and hostPlate:GetScale() or 1.0
+        if not ps or ps <= 0 then return target end
+        return target / ps
+    end
+
+    local function _reassertStashedScale(self, s)
+        pcall(function()
+            local target = self.MyNP_targetScale
+            if target == nil then return end
+            local parent = self.GetParent and self:GetParent()
+            local ufWant = _computeUfScaleForTarget(parent, target) or target
+            if s and math.abs(s - ufWant) < 0.01 then return end
+            self:SetScale(ufWant)
+        end)
+    end
+
+    pcall(hooksecurefunc, uf, "SetAlpha", _reassertStashedAlpha)
+    pcall(hooksecurefunc, uf, "SetScale", _reassertStashedScale)
     pcall(hooksecurefunc, uf, "SetAlpha", reassert)
     pcall(hooksecurefunc, uf, "SetScale", reassert)
+
+    -- 1.36.23: hook the outer NamePlateBase's SetAlpha too.  Blizzard's
+    -- nameplate engine writes plate:SetAlpha for distance-based fade
+    -- (driven by nameplateMinAlpha / nameplateMaxAlpha / nameplateOccluded
+    -- AlphaMult CVars).  Without a hook here, our plate:SetAlpha(0.5)
+    -- writes in ApplyOverrides get stomped on the very next fade tick,
+    -- and effective render (plate.alpha * uf.alpha) drifts back toward 1.
+    if not plate.MyNP_alphaHooked then
+        plate.MyNP_alphaHooked = true
+        pcall(hooksecurefunc, plate, "SetAlpha", _reassertStashedAlpha)
+    end
+
+    -- 1.36.24: OBSERVE (never call) plate:SetScale so we can re-
+    -- compensate uf.scale when Blizzard changes plate.scale for
+    -- distance/target/global fade.  We ONLY call uf:SetScale in the
+    -- callback — never plate:SetScale (protected).  Using pcall on
+    -- the install itself in case a future patch makes plate:SetScale
+    -- unhookable for addons.
+    if not plate.MyNP_scaleObserved then
+        plate.MyNP_scaleObserved = true
+        pcall(hooksecurefunc, plate, "SetScale", function(self, s)
+            pcall(function()
+                local child = self.UnitFrame
+                if not child then return end
+                local target = child.MyNP_targetScale
+                if target == nil then return end
+                local plateScale = s or 1.0
+                if plateScale <= 0 then plateScale = 1.0 end
+                local ufWant = target / plateScale
+                local cur = child.GetScale and child:GetScale() or 1.0
+                if math.abs(cur - ufWant) < 0.01 then return end
+                pcall(child.SetScale, child, ufWant)
+            end)
+        end)
+    end
 
     -- Hook the healthbar's SetStatusBarColor so our friendly-color
     -- override beats Blizzard's CompactUnitFrame_UpdateHealthColor
@@ -763,6 +915,16 @@ local function ResetPlate(plate)
     -- SetAlpha on the top-level plate is still permitted (no
     -- ADDON_ACTION_BLOCKED observed for it) — keep that to clear
     -- any prior alpha=0 we wrote for a hidden category.
+    --
+    -- 1.36.23: clear stashed target values BEFORE SetAlpha/SetScale.
+    -- Blizzard recycles NamePlateBase frames between units — if we
+    -- don't clear MyNP_targetAlpha here, the _reassertStashedAlpha
+    -- hook (installed once per plate, never uninstalled — hooksecurefunc
+    -- is one-way) would keep pinning the OLD unit's alpha value on the
+    -- NEW unit that spawns on this recycled plate.  E.g. a hidden pet
+    -- plate would leave MyNP_targetAlpha=0 stuck, and the next hostile
+    -- player who spawns on this plate would be invisible.
+    plate.MyNP_targetAlpha = nil
     plate:SetAlpha(1.0)
     -- Skip the UnitFrame writes if forbidden — same taint vector as
     -- ApplyOverrides above.  UnitFrame's SetScale is NOT protected
@@ -772,6 +934,8 @@ local function ResetPlate(plate)
     if uf
        and not (plate.IsForbidden and plate:IsForbidden())
        and not (uf.IsForbidden and uf:IsForbidden()) then
+        uf.MyNP_targetAlpha = nil
+        uf.MyNP_targetScale = nil
         uf:SetAlpha(1.0)
         uf:SetScale(1.0)
     end
