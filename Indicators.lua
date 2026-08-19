@@ -932,22 +932,25 @@ local function _GetHealer(plate)
     if not texOk or not tex then return nil end
     pcall(tex.SetAtlas, tex, "greencross")
     pcall(tex.SetAllPoints, tex, container)
-    pcall(tex.SetSize, tex, 14, 14)
     -- Trim away ugly white pixels around the atlas border.
     pcall(tex.SetTexCoord, tex, 0.1953125, 0.8046875, 0.1953125, 0.8046875)
-    pcall(tex.Hide, tex)
+    -- IMPORTANT: do NOT tex:Hide() here.  Textures inherit visibility
+    -- from their parent Frame — an explicit Hide() on the texture is
+    -- persistent, so a later container:Show() would show the Frame
+    -- but leave the inner texture invisible (that was the v1.36.19
+    -- regression that broke both friendly and enemy crosses).
+    -- Hide the CONTAINER instead: while hidden, the texture is
+    -- invisible (parent-cascaded); on marker:Show() the whole thing
+    -- becomes visible in one go.
+    pcall(container.Hide, container)
     -- _ApplyMarker (line ~1005) drives ClearAllPoints + SetPoint on
     -- the returned object using cfg.anchor/xOffset/yOffset/scale.
     -- Return the CONTAINER Frame so scale + placement affect the whole
     -- indicator (matching BBP's classIndicator frame-level Set*
-    -- operations), and expose the underlying texture on .icon in case
-    -- callers need to tint / desaturate — which _ApplyHealerMarkerInner
-    -- does (SetVertexColor + SetDesaturated).  Backwards compatible:
-    -- Frame:Show/Hide/SetPoint/SetScale all work the same way.
+    -- operations), and expose the underlying texture on .icon so
+    -- _ApplyHealerMarkerInner can route SetDesaturated/SetVertexColor
+    -- to the drawable.
     container.icon = tex
-    -- Container is used as the marker object; texture-only methods
-    -- (SetDesaturated, SetVertexColor) are forwarded to .icon in the
-    -- apply path so existing _ApplyHealerMarkerInner logic still works.
     plate.MyNP_HealerMarker = container
     return container
 end
