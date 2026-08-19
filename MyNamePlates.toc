@@ -2,7 +2,7 @@
 ## Title: MyNamePlates
 ## Notes: Tabbed control for every nameplate category, with per-NPC toggles for totems, guardians, minions, and minor units.
 ## Author: You
-## Version: 1.36.6
+## Version: 1.36.7
 ## SavedVariables: MyNamePlatesDB
 ## DefaultState: Enabled
 ## OptionalDeps: BetterBlizzPlates, ElvUI, Plater

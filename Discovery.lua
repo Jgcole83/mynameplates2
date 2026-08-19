@@ -465,10 +465,23 @@ local function ApplyOverrides(info)
     -- through combat.  Setting alpha to 0 makes the plate invisible
     -- without touching protected APIs; the unit can still technically be
     -- moused over but won't be visually present.
+    --
+    -- 1.36.7: the `MyNP_alphaOwned` marker tracks whether we've written
+    -- a non-engine alpha to this plate/UnitFrame.  It lets ApplyOverrides
+    -- know it needs to restore engine control (via a one-shot SetAlpha
+    -- call) when the category is re-enabled or the plate becomes a target.
+    -- Without the marker, we'd either (a) fight Blizzard's distance-based
+    -- alpha on every refresh even when the user hasn't customised
+    -- anything (bug pre-1.36.7 where nameplateMinAlpha / nameplateMaxAlpha
+    -- silently no-op'd), or (b) leave stale alpha=0 on plates the user
+    -- previously hid then re-enabled.  `uf` is already in scope from the
+    -- forbidden-frame bail above.
     if hidden then
         plate:SetAlpha(0)
-        if plate.UnitFrame then
-            plate.UnitFrame:SetAlpha(0)
+        plate.MyNP_alphaOwned = true
+        if uf then
+            uf:SetAlpha(0)
+            uf.MyNP_alphaOwned = true
         end
         HideHighlight(plate)
         info._applying = nil
@@ -489,11 +502,18 @@ local function ApplyOverrides(info)
     local isTarget    = info.unit and UnitIsUnit(info.unit, "target")
 
     if isTarget and not isSummonCat then
-        plate:SetAlpha(1.0)
-        if plate.UnitFrame then
-            plate.UnitFrame:SetAlpha(1.0)
-            -- Leave UnitFrame:SetScale alone so engine's nameplateSelectedScale
-            -- still applies on the targeted plate.
+        -- Blizzard's nameplateSelectedAlpha CVar (default 1.0) drives
+        -- target alpha.  Only reassert 1.0 if we had previously written
+        -- a non-engine value (hide or per-category override); otherwise
+        -- leave alpha untouched so the user's nameplateSelectedAlpha
+        -- setting actually applies.
+        if plate.MyNP_alphaOwned then
+            plate:SetAlpha(1.0)
+            plate.MyNP_alphaOwned = nil
+        end
+        if uf and uf.MyNP_alphaOwned then
+            uf:SetAlpha(1.0)
+            uf.MyNP_alphaOwned = nil
         end
         info._applying = nil
         return
@@ -501,12 +521,36 @@ local function ApplyOverrides(info)
 
     -- Apply user's category overrides to every non-target plate (and to
     -- every summon plate, regardless of target state).
-    plate:SetAlpha(alpha)
-    if plate.UnitFrame and alpha < 1.0 then
-        plate.UnitFrame:SetAlpha(alpha)
+    --
+    -- 1.36.7: only WRITE alpha when the category has actually been
+    -- customised (alpha < 1.0).  At alpha == 1.0 the user has expressed
+    -- no per-category preference, so we hand control back to Blizzard's
+    -- global alpha CVars (nameplateMinAlpha / nameplateMaxAlpha /
+    -- nameplateOccludedAlphaMult / etc.).  Pre-1.36.7 we unconditionally
+    -- wrote plate:SetAlpha(cat.alpha) here — with cat.alpha defaulting
+    -- to 1.0 — which stomped Blizzard's distance-based alpha on every
+    -- ApplyOverrides call (multiple times per second per plate via the
+    -- SetAlpha reassert hook), which is why the "Minimum / Maximum
+    -- Alpha" sliders on the General tab silently no-op'd.
+    if alpha < 1.0 then
+        plate:SetAlpha(alpha)
+        plate.MyNP_alphaOwned = true
+        if uf then
+            uf:SetAlpha(alpha)
+            uf.MyNP_alphaOwned = true
+        end
+    elseif plate.MyNP_alphaOwned then
+        -- One-shot restore: hand control back to the engine.  Blizzard's
+        -- next distance-alpha tick will overwrite this value.
+        plate:SetAlpha(1.0)
+        plate.MyNP_alphaOwned = nil
+        if uf and uf.MyNP_alphaOwned then
+            uf:SetAlpha(1.0)
+            uf.MyNP_alphaOwned = nil
+        end
     end
-    if plate.UnitFrame and (isSummonCat or scale ~= 1.0) then
-        plate.UnitFrame:SetScale(scale)
+    if uf and (isSummonCat or scale ~= 1.0) then
+        uf:SetScale(scale)
     end
 
     -- Cosmetic indicators (target arrow, healer cross) — live in
