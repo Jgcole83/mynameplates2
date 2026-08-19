@@ -211,6 +211,42 @@ function ns:WipeArenaLinks()
     wipe(_arenaByPlate)
 end
 
+-- Attempt to link every currently-visible plate to its arena slot.
+-- Called whenever prep data lands or arena rosters change.  Iterates
+-- all plates and asks Blizzard "which arena unit are you?" via three
+-- signals in order of confidence:
+--   1. UnitIsUnit(uf.unit, "arenaN") — same test AM:RescanDirect uses.
+--   2. C_NamePlate.GetNamePlateForUnit("arenaN") returned this plate.
+--   3. Per-plate class cache uniquely matches ARENA_PREP[i].classFile.
+-- On any hit, LinkPlateToArena cements the binding and seeds caches.
+local function _LinkVisiblePlatesToArena()
+    if not _IsInArena() then return end
+    if not (C_NamePlate and C_NamePlate.GetNamePlates) then return end
+    if not ns.LinkPlateToArena then return end
+    for _, plate in ipairs(C_NamePlate.GetNamePlates(true)) do
+        if not (ns.GetArenaByPlate and ns:GetArenaByPlate(plate)) then
+            local uf = plate.UnitFrame
+            local unit = uf and (uf.unit or uf.displayedUnit)
+            for i = 1, 3 do
+                local matched
+                if unit and UnitIsUnit then
+                    local ok, r = pcall(UnitIsUnit, unit, "arena" .. i)
+                    if ok and r then matched = true end
+                end
+                if (not matched) and C_NamePlate.GetNamePlateForUnit then
+                    local ok, p = pcall(C_NamePlate.GetNamePlateForUnit,
+                                        "arena" .. i, true)
+                    if ok and p == plate then matched = true end
+                end
+                if matched then
+                    pcall(ns.LinkPlateToArena, ns, plate, i)
+                    break
+                end
+            end
+        end
+    end
+end
+
 -- Event listener for prep-phase data.  Runs synchronously (no defer)
 -- because the calls we make (GetArenaOpponentSpec / GetSpecializationInfoByID)
 -- are pure data-only APIs that don't touch secure state.
@@ -220,16 +256,28 @@ ArenaPrepListener:RegisterEvent("ARENA_OPPONENT_UPDATE")
 ArenaPrepListener:RegisterEvent("PVP_MATCH_ACTIVE")
 ArenaPrepListener:RegisterEvent("PVP_MATCH_STATE_CHANGED")
 ArenaPrepListener:RegisterEvent("PLAYER_ENTERING_WORLD")
+ArenaPrepListener:RegisterEvent("NAME_PLATE_UNIT_ADDED")
 ArenaPrepListener:SetScript("OnEvent", function(_, event)
     if event == "PLAYER_ENTERING_WORLD" then
         wipe(ns.ARENA_PREP)
         pcall(ns.WipeArenaLinks, ns)
     end
     pcall(ns.RefreshArenaPrep, ns)
-    -- Kick indicators/labels once prep data lands so any pre-existing
-    -- plates re-render with the fresh healer-slot info.
-    if ns.RefreshAllIndicators then pcall(ns.RefreshAllIndicators, ns) end
-    if ns.RefreshAllLabels     then pcall(ns.RefreshAllLabels,     ns) end
+    -- Try to link visible plates before kicking the refresh cascade.
+    -- Deferred so we don't compete with AMListener's own defer for
+    -- the same events — LinkVisiblePlates piggybacks on whatever
+    -- state AMListener produces plus prep data.
+    if C_Timer and C_Timer.After then
+        C_Timer.After(0, function()
+            pcall(_LinkVisiblePlatesToArena)
+            if ns.RefreshAllIndicators then pcall(ns.RefreshAllIndicators, ns) end
+            if ns.RefreshAllLabels     then pcall(ns.RefreshAllLabels,     ns) end
+        end)
+    else
+        pcall(_LinkVisiblePlatesToArena)
+        if ns.RefreshAllIndicators then pcall(ns.RefreshAllIndicators, ns) end
+        if ns.RefreshAllLabels     then pcall(ns.RefreshAllLabels,     ns) end
+    end
 end)
 
 ----------------------------------------------------------------------
@@ -409,6 +457,19 @@ function AM:RescanDirect()
                     local ok, isUnit = pcall(UnitIsUnit, unit, "arena" .. i)
                     if ok and isUnit then
                         self:Tag(plate, i)
+                        -- 1.36.16: escalate to definitive linkage.
+                        -- UnitIsUnit is Blizzard's authoritative
+                        -- token comparison — if it says the plate
+                        -- IS arenaN, we know it with 100% certainty
+                        -- (unlike fingerprint match, which guesses).
+                        -- LinkPlateToArena will also seed the per-
+                        -- plate spec + class caches from ARENA_PREP,
+                        -- so the plate renders correct data on the
+                        -- very first NAME_PLATE_UNIT_ADDED tick with
+                        -- no user interaction required.
+                        if ns.LinkPlateToArena then
+                            pcall(ns.LinkPlateToArena, ns, plate, i)
+                        end
                         break
                     end
                 end
@@ -500,7 +561,16 @@ function AM:LearnFromIntermediary(intermediary)
             end
         end
     end
-    if plate then self:Tag(plate, matchedArena) end
+    if plate then
+        self:Tag(plate, matchedArena)
+        -- 1.36.16: escalate to definitive linkage on any intermediary
+        -- hit so the plate <-> arena binding survives ArenaMap wipes
+        -- and downstream lookups (spec, class, healer cross) get the
+        -- authoritative prep-data path.
+        if ns.LinkPlateToArena then
+            pcall(ns.LinkPlateToArena, ns, plate, matchedArena)
+        end
+    end
 end
 
 ----------------------------------------------------------------------
