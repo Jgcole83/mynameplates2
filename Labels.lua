@@ -1516,6 +1516,24 @@ local function _CaptureSpecFromToken(token)
         ns:SetSpecByPlate(plate, specName)
     end
 
+    -- 1.36.15: DEFINITIVE ARENA LINKAGE.  If this token also happens
+    -- to be one of arena1..3, we now KNOW plate <-> arenaN with 100%
+    -- certainty (UnitIsUnit on target/focus/mouseover tokens returns
+    -- a real boolean even for anonymised units).  Record the link
+    -- and seed prep-derived spec + class into any empty per-plate
+    -- caches.  This is how we escape the "user targeted the healer
+    -- but tooltip was anonymised, so no spec cached" edge case and
+    -- also fills class caches for plates we couldn't UnitClass.
+    if ns.LinkPlateToArena and UnitIsUnit then
+        for i = 1, 3 do
+            local ok, match = pcall(UnitIsUnit, token, "arena" .. i)
+            if ok and match then
+                ns:LinkPlateToArena(plate, i)
+                break
+            end
+        end
+    end
+
     -- Immediate refresh so the spec + class land on the plate now,
     -- not on the next event-driven RefreshAllLabels.  Also kick
     -- indicators so class icon + healer cross re-evaluate with the
@@ -1776,13 +1794,28 @@ local function _GetSpecName(plate, unit)
         if cached then return cached end
     end
 
+    -- 1.36.15: DEFINITIVE ARENA LINKAGE path.  Populated only from
+    -- target/focus/mouseover UnitIsUnit hits (never fingerprint), so
+    -- 100% reliable when it lights up.  Returns the specName from
+    -- the prep cache (from GetArenaOpponentSpec — canonical Blizzard
+    -- data, always correct for the linked slot).  Runs before the
+    -- ArenaMap path because ArenaMap can be wrong; this table cannot.
+    if plate and ns.GetArenaByPlate then
+        local idx = ns:GetArenaByPlate(plate)
+        local prep = idx and ns.ARENA_PREP and ns.ARENA_PREP[idx]
+        if prep and prep.specName and prep.specName ~= "" then
+            return prep.specName
+        end
+    end
+
     -- ARENA path.  ArenaMap binds plate → arenaN canonical token;
     -- GetArenaOpponentSpec is the authoritative spec source when
     -- ArenaMap's plate → slot binding is correct.  This path uses
     -- ONLY `plate` as the lookup key and reads the spec via a
     -- canonical token (arenaN) — never touches `unit` — so it's
     -- safe regardless of whether `unit` is secret.  Runs AFTER
-    -- the per-plate cache so a direct capture always wins.
+    -- the per-plate cache and the definitive linkage so a direct
+    -- capture always wins.
     if ns.GetArenaUnitForPlate and plate then
         local _, idx = ns:GetArenaUnitForPlate(plate)
         if idx and GetArenaOpponentSpec then
@@ -1831,6 +1864,14 @@ local function _ClassColor(unit, plate)
     -- teams and hand back the wrong class here.
     if (not classFile) and plate and ns.GetClassByPlate then
         classFile = ns:GetClassByPlate(plate)
+    end
+    -- 1.36.15: definitive arena linkage -> ARENA_PREP classFile.
+    -- Same rationale: only set from target/focus/mouseover hits,
+    -- so guaranteed correct when populated.
+    if (not classFile) and plate and ns.GetArenaByPlate then
+        local idx = ns:GetArenaByPlate(plate)
+        local prep = idx and ns.ARENA_PREP and ns.ARENA_PREP[idx]
+        if prep and prep.classFile then classFile = prep.classFile end
     end
     -- Fallback 1: ArenaMap canonical "arenaN" token (arenas).
     if (not classFile) and ns.GetArenaUnitForPlate and plate then

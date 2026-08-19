@@ -1804,6 +1804,11 @@ f:SetScript("OnEvent", function(_, event, unit, arg2)
                 -- until the user re-targeted the new unit.  Matches
                 -- the same lifecycle guarantee the spec cache has.
                 if ns.ClearClassByPlate then pcall(ns.ClearClassByPlate, ns, plate) end
+                -- 1.36.15: unlink the plate from ARENA_PREP so a
+                -- recycled frame doesn't inherit its predecessor's
+                -- arena-slot binding.  The next definitive UnitIsUnit
+                -- hit will rebind it correctly.
+                if ns.UnlinkPlateFromArena then pcall(ns.UnlinkPlateFromArena, ns, plate) end
                 -- Same for the per-plate summon-type cache (target/
                 -- mouseover capture).  Without this reset, a totem's
                 -- plate frame recycled into a player would still

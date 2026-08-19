@@ -74,6 +74,165 @@ end
 ns.IsInArena = _IsInArena
 
 ----------------------------------------------------------------------
+-- 1.36.15: ARENA PREP CACHE (sArena-parity)
+--
+-- Blizzard fires `ARENA_PREP_OPPONENT_SPECIALIZATIONS` during the
+-- gate/prep phase BEFORE any plate exists.  `GetArenaOpponentSpec(i)`
+-- returns each opponent's specID at that point.  From the specID we
+-- can derive spec name + class file + role via GetSpecializationInfoByID.
+-- sArena caches this and never guesses again — it's the authoritative
+-- source of truth for who each of the 3 arena slots is.
+--
+-- We adopt the same pattern here.  The prep cache is separate from
+-- ArenaMap's `arenaCache` (which is a plate-matching fingerprint
+-- keyed by class/race/sex/power) because we want the prep data
+-- available even before any plate spawns, and we want it to survive
+-- ArenaMap's periodic wipes.
+--
+-- Downstream consumers:
+--   * RefreshHealerCrosses  -> iterate ARENA_PREP, find slots whose
+--                              isHealer==true, look up their plate via
+--                              _plateByArena, stamp the cross.
+--   * Labels _GetSpecName   -> when _specByPlate is empty but ArenaMap
+--                              has a definitive binding, fall through
+--                              to ARENA_PREP[idx].specName.
+--   * _CaptureSpecFromToken -> after target/mouseover capture, check
+--                              UnitIsUnit(token, "arenaN") to establish
+--                              _plateByArena[N] once, then seed the
+--                              per-plate spec+class caches from prep
+--                              data (which is authoritative and
+--                              correct even when the tooltip is
+--                              partially anonymised).
+----------------------------------------------------------------------
+ns.ARENA_PREP = {}  -- [1..3] = { specID, specName, classFile, className, isHealer }
+
+function ns:RefreshArenaPrep()
+    if not GetArenaOpponentSpec then return end
+    if not GetSpecializationInfoByID then return end
+    for i = 1, 3 do
+        local ok, specID = pcall(GetArenaOpponentSpec, i)
+        if ok and specID and specID ~= 0 then
+            local ok2, _, sName, _, _, _, classFile, className =
+                pcall(GetSpecializationInfoByID, specID)
+            if ok2 and classFile then
+                ns.ARENA_PREP[i] = {
+                    specID    = specID,
+                    specName  = sName,
+                    classFile = classFile,
+                    className = className,
+                    isHealer  = (ns.HEALER_SPECS and ns.HEALER_SPECS[specID]) and true or false,
+                }
+            end
+        else
+            ns.ARENA_PREP[i] = nil
+        end
+    end
+end
+
+function ns:GetArenaPrepInfo(idx)
+    return idx and ns.ARENA_PREP[idx] or nil
+end
+
+-- Definitive plate <-> arena-slot linkage.  Populated only from
+-- authoritative signals (target / mouseover / focus UnitIsUnit hits),
+-- NEVER from fingerprint match.  Separate from ArenaMap because
+-- ArenaMap's binding can be wrong in ambiguous teams; this table is
+-- only ever written when we KNOW the plate is a specific arenaN.
+local _plateByArena = {}
+local _arenaByPlate = {}
+
+function ns:GetPlateByArena(idx)
+    return idx and _plateByArena[idx] or nil
+end
+
+function ns:GetArenaByPlate(plate)
+    return plate and _arenaByPlate[plate] or nil
+end
+
+-- Establish a definitive plate -> arena binding, and (as a side
+-- effect) seed the per-plate spec + class caches from ARENA_PREP so
+-- every downstream lookup (spec label, class icon, health-bar color,
+-- healer cross) gets correct data immediately.  Safe to call
+-- repeatedly — idempotent if the binding is unchanged.
+function ns:LinkPlateToArena(plate, idx)
+    if not (plate and idx and idx >= 1 and idx <= 3) then return end
+
+    -- Displace any stale binding for this idx or plate.  If the
+    -- same plate frame was previously bound to a different slot
+    -- (arena roster rotation, plate frame recycled, etc.), we
+    -- overwrite so the newest signal wins.
+    local oldIdxForPlate = _arenaByPlate[plate]
+    if oldIdxForPlate and oldIdxForPlate ~= idx then
+        _plateByArena[oldIdxForPlate] = nil
+    end
+    local oldPlateForIdx = _plateByArena[idx]
+    if oldPlateForIdx and oldPlateForIdx ~= plate then
+        _arenaByPlate[oldPlateForIdx] = nil
+    end
+    _plateByArena[idx] = plate
+    _arenaByPlate[plate] = idx
+
+    -- Mirror the definitive binding into ArenaMap so ArenaMap-based
+    -- consumers (spec fallback, class-file fallback, aura pipeline)
+    -- also see the correct mapping — and so any prior mis-tag from
+    -- fingerprint match gets displaced.
+    if AM and AM.Tag then pcall(AM.Tag, AM, plate, idx) end
+
+    -- Seed per-plate spec + class caches from prep data.  These are
+    -- non-destructive: if the user's target/mouseover capture already
+    -- stored a value, we don't overwrite.  Prep-data values are only
+    -- filled in when the cache is empty.
+    local prep = ns.ARENA_PREP[idx]
+    if prep then
+        if ns.GetSpecByPlate and ns.SetSpecByPlate then
+            local existing = ns:GetSpecByPlate(plate)
+            if (not existing) and prep.specName then
+                ns:SetSpecByPlate(plate, prep.specName)
+            end
+        end
+        if ns.GetClassByPlate and ns.SetClassByPlate then
+            local existing = ns:GetClassByPlate(plate)
+            if (not existing) and prep.classFile then
+                ns:SetClassByPlate(plate, prep.classFile)
+            end
+        end
+    end
+end
+
+function ns:UnlinkPlateFromArena(plate)
+    if not plate then return end
+    local idx = _arenaByPlate[plate]
+    if idx then _plateByArena[idx] = nil end
+    _arenaByPlate[plate] = nil
+end
+
+function ns:WipeArenaLinks()
+    wipe(_plateByArena)
+    wipe(_arenaByPlate)
+end
+
+-- Event listener for prep-phase data.  Runs synchronously (no defer)
+-- because the calls we make (GetArenaOpponentSpec / GetSpecializationInfoByID)
+-- are pure data-only APIs that don't touch secure state.
+local ArenaPrepListener = CreateFrame("Frame")
+ArenaPrepListener:RegisterEvent("ARENA_PREP_OPPONENT_SPECIALIZATIONS")
+ArenaPrepListener:RegisterEvent("ARENA_OPPONENT_UPDATE")
+ArenaPrepListener:RegisterEvent("PVP_MATCH_ACTIVE")
+ArenaPrepListener:RegisterEvent("PVP_MATCH_STATE_CHANGED")
+ArenaPrepListener:RegisterEvent("PLAYER_ENTERING_WORLD")
+ArenaPrepListener:SetScript("OnEvent", function(_, event)
+    if event == "PLAYER_ENTERING_WORLD" then
+        wipe(ns.ARENA_PREP)
+        pcall(ns.WipeArenaLinks, ns)
+    end
+    pcall(ns.RefreshArenaPrep, ns)
+    -- Kick indicators/labels once prep data lands so any pre-existing
+    -- plates re-render with the fresh healer-slot info.
+    if ns.RefreshAllIndicators then pcall(ns.RefreshAllIndicators, ns) end
+    if ns.RefreshAllLabels     then pcall(ns.RefreshAllLabels,     ns) end
+end)
+
+----------------------------------------------------------------------
 -- Property fingerprint helpers (BBP arenaid.lua port)
 ----------------------------------------------------------------------
 local function _safeVal(v)
@@ -737,6 +896,16 @@ local function _GetClassFile(plate, unit)
         local cached = ns:GetClassByPlate(plate)
         if cached then return cached end
     end
+    -- 1.36.15: definitive arena linkage -> ARENA_PREP classFile.
+    -- Only ever set from target/focus/mouseover UnitIsUnit hits so
+    -- guaranteed correct when populated.  Fills the gap when the
+    -- per-plate class cache is empty (e.g. UnitClass on the captured
+    -- token returned secret) but we DO know the arena slot.
+    if plate and ns.GetArenaByPlate then
+        local idx = ns:GetArenaByPlate(plate)
+        local prep = idx and ns.ARENA_PREP and ns.ARENA_PREP[idx]
+        if prep and prep.classFile then return prep.classFile end
+    end
     local arenaUnit = plate and ns:GetArenaUnitForPlate(plate)
     if arenaUnit then
         local _, cf = UnitClass(arenaUnit)
@@ -999,6 +1168,70 @@ function ns:RefreshHealerCrosses()
             if plate then
                 _ApplyHealerMarkerOnPlate(plate, true, I.healerFriendly)
             end
+        end
+    end
+
+    -- 1.36.15: ARENA_PREP + LINKAGE path (highest-of-highest confidence).
+    -- Iterate the prep cache (populated at ARENA_PREP_OPPONENT_SPECIALIZATIONS
+    -- from Blizzard's authoritative GetArenaOpponentSpec).  For each slot
+    -- flagged isHealer:
+    --   1. Prefer the definitive _plateByArena[i] linkage — set only from
+    --      target/focus/mouseover UnitIsUnit hits, so 100% reliable when
+    --      populated.
+    --   2. Fall through to a class-match walk: if we know the healer's
+    --      classFile from prep AND that class is unique in the enemy team,
+    --      any plate whose per-plate class cache matches must be the
+    --      healer.  Uses ns:GetClassByPlate so it only lights up for
+    --      plates the user has already interacted with.
+    --   3. Third fallback: UnitClass on plate.unit (non-anonymised plates).
+    -- Failing all three, the per-plate spec cache + plate-walk paths
+    -- below still run.
+    if _IsInArena() and I.healerEnemy and I.healerEnemy.enabled == "1"
+       and ns.ARENA_PREP then
+        -- Determine which healer class(es) are UNIQUE in the enemy team.
+        -- If two opponents share a class (extremely rare but legal in
+        -- shuffle / duplicate-class cheese comps) we can't identify by
+        -- class alone, so we require uniqueness.
+        local classCount, healerSlots = {}, {}
+        for i = 1, 3 do
+            local p = ns.ARENA_PREP[i]
+            if p and p.classFile then
+                classCount[p.classFile] = (classCount[p.classFile] or 0) + 1
+                if p.isHealer then healerSlots[#healerSlots + 1] = i end
+            end
+        end
+        for _, i in ipairs(healerSlots) do
+            pcall(function()
+                local prep = ns.ARENA_PREP[i]
+                if not prep then return end
+                local plate = ns.GetPlateByArena and ns:GetPlateByArena(i)
+                if not plate and prep.classFile and classCount[prep.classFile] == 1
+                   and C_NamePlate and C_NamePlate.GetNamePlates then
+                    for _, p in ipairs(C_NamePlate.GetNamePlates(true)) do
+                        local matched
+                        if ns.GetClassByPlate then
+                            local cached = ns:GetClassByPlate(p)
+                            if cached == prep.classFile then matched = p end
+                        end
+                        if not matched then
+                            local uf = p.UnitFrame
+                            local u  = uf and (uf.unit or uf.displayedUnit)
+                            if u then
+                                local okC, _, cf = pcall(UnitClass, u)
+                                if okC and cf
+                                   and not (issecretvalue and issecretvalue(cf))
+                                   and cf == prep.classFile then
+                                    matched = p
+                                end
+                            end
+                        end
+                        if matched then plate = matched; break end
+                    end
+                end
+                if plate then
+                    _ApplyHealerMarkerOnPlate(plate, false, I.healerEnemy)
+                end
+            end)
         end
     end
 
