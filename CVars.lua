@@ -66,11 +66,31 @@ ns.GLOBAL = {
 }
 
 ----------------------------------------------------------------------
--- Plate width / height (set via C_NamePlate, not a CVar)
+-- Plate width / height (set via C_NamePlate, not a CVar).
+--
+-- 1.36.5: Blizzard REMOVED C_NamePlate.SetNamePlateFriendlySize /
+-- SetNamePlateEnemySize in retail Midnight 12.x — the only working
+-- API is now the unified C_NamePlate.SetNamePlateSize(width, height)
+-- which sets BOTH friendly and enemy plates to the same dimensions.
+-- (Confirmed via BBP midnight/BetterBlizzPlates.lua:6002 comment:
+-- "Blizzard decided to remove the API to control different widths for
+-- Friendly/Enemy Nameplates in Midnight.")
+--
+-- Pre-1.36.5 the addon exposed four sliders (friendlyWidth,
+-- friendlyHeight, enemyWidth, enemyHeight) but silently no-op'd
+-- because we called the removed APIs.  The four old keys are
+-- migrated to the two new unified keys in Core.lua's ADDON_LOADED
+-- handler (max of friendly/enemy for each dimension).
+--
+-- Defaults track BBP: 110x45 is our "unconfigured" sentinel that
+-- Core.lua's ApplyAll uses to SKIP calling the API — that leaves
+-- Blizzard's own defaults (which depend on the Large Nameplates
+-- CVar: 145 or 185 for width) untouched.  Any deviation from 110x45
+-- triggers enforcement + the SetNamePlateSize reassert hook.
 ----------------------------------------------------------------------
 ns.PLATE_SIZE = {
-    { key = "friendlyWidth",  label = "Friendly Width",  default = 110, min = 50, max = 250, step = 1 },
-    { key = "friendlyHeight", label = "Friendly Height", default = 45,  min = 10, max = 100, step = 1 },
-    { key = "enemyWidth",     label = "Enemy Width",     default = 110, min = 50, max = 250, step = 1 },
-    { key = "enemyHeight",    label = "Enemy Height",    default = 45,  min = 10, max = 100, step = 1 },
+    { key = "width",  label = "Nameplate Width",  default = 110, min = 50, max = 300, step = 1,
+      tooltip = "Width of the nameplate healthbar in pixels.  Applies to BOTH friendly and enemy plates — Blizzard removed the ability to set them separately in Midnight 12.x.  Leave at 110 to use Blizzard's default (which is 145 with Large Nameplates off, 185 with it on)." },
+    { key = "height", label = "Nameplate Height", default = 45,  min = 10, max = 120, step = 1,
+      tooltip = "Height of the nameplate healthbar in pixels.  Applies to BOTH friendly and enemy plates.  Leave at 45 to use Blizzard's default." },
 }

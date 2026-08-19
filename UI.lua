@@ -254,6 +254,16 @@ local function BuildGeneralPanel(panel)
 
     y = y - 6
     MakeHeading(content, "Plate Width / Height"):SetPoint("TOPLEFT", 0, y); y = y - 22
+    -- 1.36.5 note: retail Midnight removed the ability to size friendly
+    -- and enemy plates independently.  Both sliders drive the unified
+    -- C_NamePlate.SetNamePlateSize API so the same dimensions apply to
+    -- every plate.  Leave both at 110 x 45 (default) to fall back to
+    -- Blizzard's own size (which depends on the Large Nameplates CVar).
+    local note = MakeLabel(content,
+        "Applies to friendly AND enemy plates (Midnight consolidated these).  Leave at defaults (110 x 45) to use Blizzard's own size.",
+        { 0.7, 0.7, 0.7 })
+    note:SetPoint("TOPLEFT", 8, y - 2)
+    y = y - 22
     for _, e in ipairs(ns.PLATE_SIZE) do
         local s = MakeSlider(content, e,
             function() return ns:GetPlateSize(e.key) end,

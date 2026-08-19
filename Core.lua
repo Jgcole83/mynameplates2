@@ -303,6 +303,12 @@ local function ApplyCVar(cvar, value)
     C_CVar.SetCVar(cvar, tostring(value))
 end
 
+-- 1.36.5: retail Midnight 12.x uses the unified SetNamePlateSize
+-- (Blizzard removed the split friendly/enemy setters).  We call
+-- SetNamePlateSize which applies to BOTH plate types.  If we're
+-- running on a client that still has the old separate setters
+-- (legacy/preservation retail), fall through to them so this file
+-- stays compatible with both.
 local function ApplyPlateSize()
     local ps = MyNamePlatesDB and MyNamePlatesDB.plateSize
     if not ps then return end
@@ -310,9 +316,17 @@ local function ApplyPlateSize()
         pendingPlateSize = true
         return
     end
-    if C_NamePlate and C_NamePlate.SetNamePlateFriendlySize then
-        C_NamePlate.SetNamePlateFriendlySize(ps.friendlyWidth, ps.friendlyHeight)
-        C_NamePlate.SetNamePlateEnemySize(ps.enemyWidth, ps.enemyHeight)
+    if not C_NamePlate then return end
+    local w = tonumber(ps.width)  or 110
+    local h = tonumber(ps.height) or 45
+    if C_NamePlate.SetNamePlateSize then
+        pcall(C_NamePlate.SetNamePlateSize, w, h)
+    elseif C_NamePlate.SetNamePlateFriendlySize then
+        -- Legacy retail path — pre-Midnight clients still expose the
+        -- split setters.  Apply the same value to both so behavior
+        -- matches the unified path.
+        pcall(C_NamePlate.SetNamePlateFriendlySize, w, h)
+        pcall(C_NamePlate.SetNamePlateEnemySize,    w, h)
     end
 end
 
@@ -476,13 +490,14 @@ function ns:ApplyAll()
 
     -- Plate size: skip when values are still at our addon defaults,
     -- otherwise we'd force Blizzard's *small* nameplate size (110x45)
-    -- even when the player has Large Nameplates enabled (modern default,
-    -- which uses 154x64).  Calling SetNamePlate*Size with the smaller
-    -- value shrinks the click box below the visible plate and breaks
-    -- click-targeting.  Only apply when the user has explicitly resized.
+    -- even when the player has Large Nameplates enabled — Blizzard's
+    -- actual default is 145x45 (or 185 with Large Nameplates on) per
+    -- BBP's midnight source, and calling SetNamePlateSize with the
+    -- smaller value shrinks the click box below the visible plate and
+    -- breaks click-targeting.  Only apply when the user has explicitly
+    -- resized away from 110x45.
     local ps = MyNamePlatesDB.plateSize
-    if ps and (ps.friendlyWidth ~= 110 or ps.friendlyHeight ~= 45
-                or ps.enemyWidth ~= 110 or ps.enemyHeight ~= 45) then
+    if ps and (ps.width ~= 110 or ps.height ~= 45) then
         ApplyPlateSize()
     end
 
@@ -545,6 +560,46 @@ f:SetScript("OnEvent", function(_, event, arg1)
                 pt.iconSize = 30
             end
             MyNamePlatesDB._iconSize30Applied = true
+        end
+
+        -- 1.36.5 one-shot migration: consolidate the four old plate-
+        -- size keys (friendlyWidth / friendlyHeight / enemyWidth /
+        -- enemyHeight) into the two new unified keys (width / height).
+        -- The four old sliders silently no-op'd on retail Midnight
+        -- 12.x because Blizzard removed SetNamePlateFriendlySize /
+        -- SetNamePlateEnemySize; the addon should have been calling
+        -- the unified SetNamePlateSize the whole time.  Uses math.max
+        -- of each dimension so users who explicitly widened either
+        -- friendly or enemy plates keep the larger value (matches
+        -- BBP's own consolidation strategy at midnight/BetterBlizz-
+        -- Plates.lua:2052).  Old keys are DROPPED so MergeDefaults
+        -- next boot doesn't reintroduce them.  Guarded by a version
+        -- flag so this runs exactly once per DB.
+        if not MyNamePlatesDB._plateSizeUnified then
+            local ps = MyNamePlatesDB.plateSize
+            if ps then
+                local fw = tonumber(ps.friendlyWidth)
+                local ew = tonumber(ps.enemyWidth)
+                local fh = tonumber(ps.friendlyHeight)
+                local eh = tonumber(ps.enemyHeight)
+                -- Only migrate a value in when the user had actually
+                -- changed one of the old keys away from the pre-1.36.5
+                -- default (110x45).  Otherwise leave the new keys at
+                -- their defaults (already applied by MergeDefaults).
+                if fw or ew or fh or eh then
+                    local mw = math.max(fw or 110, ew or 110)
+                    local mh = math.max(fh or 45,  eh or 45)
+                    if mw ~= 110 or mh ~= 45 then
+                        ps.width  = mw
+                        ps.height = mh
+                    end
+                end
+                ps.friendlyWidth  = nil
+                ps.friendlyHeight = nil
+                ps.enemyWidth     = nil
+                ps.enemyHeight    = nil
+            end
+            MyNamePlatesDB._plateSizeUnified = true
         end
     elseif event == "PLAYER_LOGIN" then
         ns:ApplyAll()

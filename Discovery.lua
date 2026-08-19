@@ -1912,22 +1912,24 @@ end
 ----------------------------------------------------------------------
 -- Plate-size lock.  When the user has customised plate width / height,
 -- enforce it against any other addon (BBP, Plater, ElvUI) that calls
--- C_NamePlate.SetNamePlateFriendlySize / SetNamePlateEnemySize after us.
--- We only re-assert when the user has values away from the addon
--- default (110x45).  Skipping the default case avoids the click-area
--- bug we hit earlier where forcing 110x45 shrank the click box below
--- the visible plate (which is 154x64 on Large Nameplates).
+-- C_NamePlate.SetNamePlateSize after us.  We only re-assert when the
+-- user has values away from the addon default (110x45).  Skipping the
+-- default case avoids the click-area bug we hit earlier where forcing
+-- 110x45 shrank the click box below the visible plate (which is
+-- 154x64 on Large Nameplates).
+--
+-- 1.36.5: retail Midnight 12.x removed the split
+-- SetNamePlate{Friendly,Enemy}Size APIs.  Only the unified
+-- SetNamePlateSize survives, and it applies to BOTH plate types.
+-- We hook that; if the client still exposes the old split setters
+-- (legacy retail), we hook those too so the lock works on both.
 ----------------------------------------------------------------------
-local function _customSize(which)
+local function _customSize()
     local ps = MyNamePlatesDB and MyNamePlatesDB.plateSize
     if not ps then return nil end
-    local w, h
-    if which == "Friendly" then
-        w, h = ps.friendlyWidth, ps.friendlyHeight
-    else
-        w, h = ps.enemyWidth, ps.enemyHeight
-    end
-    if not w or not h then return nil end
+    local w = tonumber(ps.width)
+    local h = tonumber(ps.height)
+    if not (w and h) then return nil end
     -- Skip enforcement when at our default 110x45 — Blizzard's actual
     -- default depends on the Large Nameplates CVar and is what we want
     -- in the unconfigured case.
@@ -1935,12 +1937,12 @@ local function _customSize(which)
     return w, h
 end
 
-local function HookSizeLock(funcName, which)
+local function HookSizeLock(funcName)
     if not (C_NamePlate and C_NamePlate[funcName]) then return end
     local guard = false
     hooksecurefunc(C_NamePlate, funcName, function(width, height)
         if guard then return end
-        local wantW, wantH = _customSize(which)
+        local wantW, wantH = _customSize()
         if not wantW then return end
         if width ~= wantW or height ~= wantH then
             guard = true
@@ -1950,8 +1952,9 @@ local function HookSizeLock(funcName, which)
     end)
 end
 
-HookSizeLock("SetNamePlateFriendlySize", "Friendly")
-HookSizeLock("SetNamePlateEnemySize",    "Enemy")
+HookSizeLock("SetNamePlateSize")            -- Midnight 12.x unified API
+HookSizeLock("SetNamePlateFriendlySize")    -- legacy retail (no-op on Midnight)
+HookSizeLock("SetNamePlateEnemySize")       -- legacy retail (no-op on Midnight)
 
 if NamePlateDriverFrame and NamePlateDriverFrame.OnUnitFactionChanged then
     hooksecurefunc(NamePlateDriverFrame, "OnUnitFactionChanged", function(_, unit)
