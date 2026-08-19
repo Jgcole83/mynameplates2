@@ -1795,6 +1795,15 @@ f:SetScript("OnEvent", function(_, event, unit, arg2)
                 -- frames, so the next unit assigned here would
                 -- inherit the prior spec if we didn't reset.
                 if ns.ClearSpecByPlate then pcall(ns.ClearSpecByPlate, ns, plate) end
+                -- 1.36.13: same for the per-plate class cache.
+                -- Without this reset, a plate recycled from a Priest
+                -- into a Warrior would keep showing "PRIEST" as the
+                -- resolved classFile via the per-plate cache path,
+                -- and _ClassColor / _GetClassFile / class-icon /
+                -- health-bar color would all inherit the stale class
+                -- until the user re-targeted the new unit.  Matches
+                -- the same lifecycle guarantee the spec cache has.
+                if ns.ClearClassByPlate then pcall(ns.ClearClassByPlate, ns, plate) end
                 -- Same for the per-plate summon-type cache (target/
                 -- mouseover capture).  Without this reset, a totem's
                 -- plate frame recycled into a player would still

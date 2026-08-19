@@ -1424,27 +1424,104 @@ function ns:ClearSpecByPlate(plate)
     if plate then _specByPlate[plate] = nil end
 end
 
+-- 1.36.13: per-plate CLASS cache, keyed by plate frame identity.
+-- Rationale: ArenaMap fingerprint matching (Indicators.lua) uses
+-- class + race + sex + power to bind a plate to an arena1..3 slot.
+-- In current retail Midnight 12.x, when two of the three arena
+-- opponents share the same power type (e.g. both mana users) and
+-- their class field is anonymised, ArenaMap cannot uniquely map
+-- one of them and often mis-tags the "loser" plate (frequently the
+-- last one to spawn, often the healer) to the OTHER caster's slot.
+-- Every downstream lookup keyed on ArenaMap (spec label, class icon,
+-- healer cross) then attributes the wrong slot's data to that plate.
+--
+-- Fix: when the user TARGETS or MOUSEOVERS an enemy player, the
+-- "target" / "mouseover" tokens are canonical Blizzard tokens and
+-- UnitClass on them returns a real, non-secret classFile.  Cache
+-- that on the plate frame identity, and consult the cache FIRST
+-- (ahead of ArenaMap) in _ClassColor / _GetClassFile.  Once the
+-- user has interacted with a plate at least once, the wrong-arena-
+-- slot binding can never contaminate its class again.
+--
+-- Cache is cleared alongside _specByPlate on NAME_PLATE_UNIT_REMOVED
+-- (Discovery.lua handler) so recycled plate frames don't inherit
+-- the previous unit's class.
+local _classByPlate = {}
+
+function ns:GetClassByPlate(plate)
+    return plate and _classByPlate[plate] or nil
+end
+
+function ns:SetClassByPlate(plate, classFile)
+    if not plate then return end
+    if classFile == nil then
+        _classByPlate[plate] = nil
+        return
+    end
+    -- Only store non-secret uppercase class tokens (WARRIOR, PRIEST,
+    -- etc. — canonical Blizzard values).  Defensive: a secret-tagged
+    -- classFile passed through would taint the first == comparison
+    -- against the cached value in downstream code.
+    if issecretvalue and issecretvalue(classFile) then return end
+    if classFile == "" then return end
+    _classByPlate[plate] = classFile
+end
+
+function ns:ClearClassByPlate(plate)
+    if plate then _classByPlate[plate] = nil end
+end
+
+function ns:CountClassByPlate()
+    local n = 0
+    for _ in pairs(_classByPlate) do n = n + 1 end
+    return n
+end
+
 -- Resolve spec for the unit currently in the given token ("target"
 -- or "mouseover"), and if successful, find that unit's plate and
 -- cache the spec there.  Called from PLAYER_TARGET_CHANGED /
 -- UPDATE_MOUSEOVER_UNIT handlers.
+--
+-- 1.36.13: ALSO cache the classFile on the same plate, so class-
+-- color / class-icon / healer-cross lookups can bypass ArenaMap
+-- when a direct target/mouseover capture is available.  The class
+-- capture runs independently of the spec capture (a plate can have
+-- a valid class but no spec if the tooltip cache was cold), so
+-- neither one gates the other.
 local function _CaptureSpecFromToken(token)
     if not token then return end
     if not UnitExists(token) then return end
     if not UnitIsPlayer(token) then return end
-    -- "target" / "mouseover" tokens themselves are NEVER secret —
-    -- they're stable Blizzard tokens.  But UnitGUID/UnitName on them
-    -- COULD be secret on some patches.  _GetSpecByTooltip handles
-    -- its own internal guards.
-    local specName = _GetSpecByTooltip(token)
-    if not specName then return end
     if not C_NamePlate or not C_NamePlate.GetNamePlateForUnit then return end
     local plate = C_NamePlate.GetNamePlateForUnit(token, true)
     if not plate then return end
-    ns:SetSpecByPlate(plate, specName)
-    -- Immediate refresh so the spec lands on the plate now, not
-    -- on the next event-driven RefreshAllLabels.
-    if ns.RefreshAllLabels then pcall(ns.RefreshAllLabels, ns) end
+
+    -- Class capture: UnitClass on target/mouseover tokens returns the
+    -- real classFile on every patch we've seen, but pcall + issecret
+    -- guards defend against a future patch that anonymises even
+    -- these canonical tokens.
+    local okC, _, classFile = pcall(UnitClass, token)
+    if okC and classFile and not (issecretvalue and issecretvalue(classFile))
+       and classFile ~= "" then
+        ns:SetClassByPlate(plate, classFile)
+    end
+
+    -- Spec capture (existing behavior).  "target" / "mouseover"
+    -- tokens themselves are NEVER secret — they're stable Blizzard
+    -- tokens.  But UnitGUID/UnitName on them COULD be secret on
+    -- some patches.  _GetSpecByTooltip handles its own internal
+    -- guards.
+    local specName = _GetSpecByTooltip(token)
+    if specName then
+        ns:SetSpecByPlate(plate, specName)
+    end
+
+    -- Immediate refresh so the spec + class land on the plate now,
+    -- not on the next event-driven RefreshAllLabels.  Also kick
+    -- indicators so class icon + healer cross re-evaluate with the
+    -- fresh per-plate class cache.
+    if ns.RefreshAllLabels     then pcall(ns.RefreshAllLabels,     ns) end
+    if ns.RefreshAllIndicators then pcall(ns.RefreshAllIndicators, ns) end
 end
 
 local _targetCapture = CreateFrame("Frame")
@@ -1679,11 +1756,33 @@ local function _GetSpecName(plate, unit)
         end
     end
 
+    -- 1.36.13: PER-PLATE CACHE path (highest confidence).  This
+    -- cache is populated by _CaptureSpecFromToken when the user
+    -- targets or mouseovers a plate — reading the spec directly
+    -- from the canonical target/mouseover tooltip, which is 100%
+    -- reliable when it succeeds.  MUST come before the ArenaMap
+    -- arena path: ArenaMap's fingerprint match can mis-tag a plate
+    -- to the wrong arena1..3 slot when two opponents share power
+    -- type and their class field is anonymised (2-caster teams,
+    -- healer-and-caster-DPS teams).  When mis-tagged, the arena
+    -- path below returns another opponent's spec (e.g. "Affliction"
+    -- on the enemy healer's plate because the healer's plate got
+    -- bound to arena1 = a Warlock's slot).  The per-plate cache
+    -- bypasses that entirely — once the user targets the healer
+    -- even once, the correct spec is cached against the plate
+    -- frame itself and cannot be contaminated by ArenaMap.
+    if plate and ns.GetSpecByPlate then
+        local cached = ns:GetSpecByPlate(plate)
+        if cached then return cached end
+    end
+
     -- ARENA path.  ArenaMap binds plate → arenaN canonical token;
-    -- GetArenaOpponentSpec is the authoritative spec source.  This
-    -- path uses ONLY `plate` as the lookup key and reads the spec
-    -- via a canonical token (arenaN) — never touches `unit` — so
-    -- it's safe regardless of whether `unit` is secret.
+    -- GetArenaOpponentSpec is the authoritative spec source when
+    -- ArenaMap's plate → slot binding is correct.  This path uses
+    -- ONLY `plate` as the lookup key and reads the spec via a
+    -- canonical token (arenaN) — never touches `unit` — so it's
+    -- safe regardless of whether `unit` is secret.  Runs AFTER
+    -- the per-plate cache so a direct capture always wins.
     if ns.GetArenaUnitForPlate and plate then
         local _, idx = ns:GetArenaUnitForPlate(plate)
         if idx and GetArenaOpponentSpec then
@@ -1723,6 +1822,15 @@ local function _ClassColor(unit, plate)
     -- below taints our execution.
     if classFile and issecretvalue and issecretvalue(classFile) then
         classFile = nil
+    end
+    -- 1.36.13: PER-PLATE CACHE fallback (populated on target /
+    -- mouseover capture — see _CaptureSpecFromToken).  Runs BEFORE
+    -- ArenaMap because a direct-capture value cannot be wrong,
+    -- whereas ArenaMap's plate → arena-slot fingerprint match can
+    -- mis-tag a plate to a different opponent's slot in ambiguous
+    -- teams and hand back the wrong class here.
+    if (not classFile) and plate and ns.GetClassByPlate then
+        classFile = ns:GetClassByPlate(plate)
     end
     -- Fallback 1: ArenaMap canonical "arenaN" token (arenas).
     if (not classFile) and ns.GetArenaUnitForPlate and plate then

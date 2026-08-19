@@ -709,6 +709,18 @@ local function _GetClassFile(plate, unit)
             return classFile
         end
     end
+    -- 1.36.13: per-plate class cache (populated on target/mouseover
+    -- capture in Labels.lua's _CaptureSpecFromToken).  Preferred over
+    -- ArenaMap because a direct-capture classFile is 100% reliable,
+    -- whereas ArenaMap's fingerprint match can mis-tag a plate to a
+    -- different opponent's slot in ambiguous teams (e.g. 2 casters
+    -- both using mana with anonymised class fields) and return that
+    -- opponent's class here.  Once the user has interacted with the
+    -- plate even once, the cached class permanently wins.
+    if plate and ns.GetClassByPlate then
+        local cached = ns:GetClassByPlate(plate)
+        if cached then return cached end
+    end
     local arenaUnit = plate and ns:GetArenaUnitForPlate(plate)
     if arenaUnit then
         local _, cf = UnitClass(arenaUnit)
@@ -971,6 +983,45 @@ function ns:RefreshHealerCrosses()
             if plate then
                 _ApplyHealerMarkerOnPlate(plate, true, I.healerFriendly)
             end
+        end
+    end
+
+    -- 1.36.13: DIRECT ARENA-SLOT loop.  Iterate arena1..3 tokens
+    -- and — for each slot whose GetArenaOpponentSpec is in
+    -- HEALER_SPECS — find that unit's plate via Blizzard's
+    -- authoritative C_NamePlate.GetNamePlateForUnit("arenaN") and
+    -- stamp the cross there.  This path bypasses ArenaMap's
+    -- fingerprint match entirely, so it recovers the healer cross
+    -- on ambiguous-team arenas where the plate-walk fallback
+    -- below fails because ArenaMap mis-tagged the healer's plate
+    -- to a different opponent's slot (typical trigger: two mana-
+    -- using opponents with anonymised class fields).
+    --
+    -- Runs BEFORE the plate-walk so:
+    --   1. If the direct path finds the healer, the cross is on
+    --      the correct plate immediately.
+    --   2. The plate-walk still runs and may double-stamp if
+    --      ArenaMap happens to be correct — same plate, idempotent.
+    --   3. If the direct path fails (arena unit doesn't exist yet,
+    --      C_NamePlate can't resolve, etc.), plate-walk is the
+    --      long-standing fallback.
+    --
+    -- Every call is pcall-wrapped so a failure inside the loop
+    -- (e.g. a Blizzard API change) can't abort the fallback below.
+    if _IsInArena()
+       and I.healerEnemy and I.healerEnemy.enabled == "1"
+       and GetArenaOpponentSpec and ns.HEALER_SPECS
+       and C_NamePlate and C_NamePlate.GetNamePlateForUnit then
+        for i = 1, 3 do
+            pcall(function()
+                local arenaUnit = "arena" .. i
+                if not UnitExists(arenaUnit) then return end
+                local specID = GetArenaOpponentSpec(i)
+                if not (specID and ns.HEALER_SPECS[specID]) then return end
+                local plate = C_NamePlate.GetNamePlateForUnit(arenaUnit, true)
+                if not plate then return end
+                _ApplyHealerMarkerOnPlate(plate, false, I.healerEnemy)
+            end)
         end
     end
 
