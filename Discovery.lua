@@ -597,15 +597,27 @@ local function ApplyOverrides(info)
     -- drives visuals as intended.
     if uf then
         if isSummonCat or scale ~= 1.0 then
-            -- 1.36.23: stash target scale BEFORE SetScale for the same
-            -- reason as alpha above — the reassert() closure bails on
-            -- secret uf.unit tokens (anonymised arena enemy pets), so
-            -- without a stashed-value hook the user's per-category scale
-            -- slider silently no-op'd on the very plates it was meant
-            -- for.  _reassertStashedScale (installed by HookUnitFrame)
-            -- pins uf.scale regardless of unit-token secrecy.
+            -- 1.36.24: plate-scale compensated write.
+            --
+            -- Pre-1.36.24 we wrote uf:SetScale(cat.scale) directly.
+            -- That silently no-op'd because effective plate size =
+            -- plate.scale * uf.scale, and Blizzard's engine writes
+            -- plate:SetScale for distance / target / global fade all
+            -- the time.  E.g. a distance-faded plate has plate.scale
+            -- 0.65; our uf:SetScale(1.5) gave effective 0.975 —
+            -- indistinguishable from 1.0 by eye, so the Scale slider
+            -- looked broken.  See HookUnitFrame comment above for the
+            -- full mechanism.
+            --
+            -- Fix: divide by current plate.scale so effective =
+            -- plate.scale * (cat.scale / plate.scale) = cat.scale.
+            -- The plate:SetScale observer hook (also in HookUnitFrame)
+            -- re-runs this same compensation whenever the engine
+            -- changes plate.scale, keeping visual size pinned.
             uf.MyNP_targetScale = scale
-            uf:SetScale(scale)
+            local plateScale = plate.GetScale and plate:GetScale() or 1.0
+            if not plateScale or plateScale <= 0 then plateScale = 1.0 end
+            uf:SetScale(scale / plateScale)
             uf.MyNP_scaleOwned = true
         elseif uf.MyNP_scaleOwned then
             uf.MyNP_targetScale = nil
@@ -711,12 +723,41 @@ local function HookUnitFrame(plate)
             self:SetAlpha(want)
         end)
     end
+    -- 1.36.24: plate-scale compensation.
+    --
+    -- Blizzard's nameplate engine writes plate:SetScale on the outer
+    -- NamePlateBase for distance-based scaling (nameplateMinScale /
+    -- nameplateMaxScale), target scaling (nameplateSelectedScale),
+    -- global scaling (nameplateGlobalScale / nameplateLargerScale),
+    -- and "important" mob upscaling.  Effective visual plate size =
+    -- plate.scale * uf.scale.  If we just write uf:SetScale(1.5) while
+    -- Blizzard is writing plate:SetScale(0.65) for a distance-faded
+    -- plate, effective render is 0.65 * 1.5 = 0.975 — visually
+    -- indistinguishable from 1.0, so the user's Scale slider silently
+    -- no-op'd on every plate the engine touched (which is all of them).
+    --
+    -- Fix: compensate by computing uf.scale = cat.scale / plate.scale.
+    -- Effective = plate.scale * (cat.scale / plate.scale) = cat.scale,
+    -- regardless of engine's plate.scale writes.  We can't call
+    -- plate:SetScale (PROTECTED in retail Midnight 12.x; addon calls
+    -- trigger ADDON_ACTION_BLOCKED — see ResetPlate comment), but we
+    -- CAN hooksecurefunc it to observe Blizzard's writes and re-
+    -- compensate uf.scale in response.
+    local function _computeUfScaleForTarget(hostPlate, target)
+        if not (hostPlate and target) then return nil end
+        local ps = hostPlate.GetScale and hostPlate:GetScale() or 1.0
+        if not ps or ps <= 0 then return target end
+        return target / ps
+    end
+
     local function _reassertStashedScale(self, s)
         pcall(function()
-            local want = self.MyNP_targetScale
-            if want == nil then return end
-            if s and math.abs(s - want) < 0.01 then return end
-            self:SetScale(want)
+            local target = self.MyNP_targetScale
+            if target == nil then return end
+            local parent = self.GetParent and self:GetParent()
+            local ufWant = _computeUfScaleForTarget(parent, target) or target
+            if s and math.abs(s - ufWant) < 0.01 then return end
+            self:SetScale(ufWant)
         end)
     end
 
@@ -731,12 +772,33 @@ local function HookUnitFrame(plate)
     -- AlphaMult CVars).  Without a hook here, our plate:SetAlpha(0.5)
     -- writes in ApplyOverrides get stomped on the very next fade tick,
     -- and effective render (plate.alpha * uf.alpha) drifts back toward 1.
-    -- We only hook alpha here, not scale — top-level plate SetScale is
-    -- PROTECTED in retail Midnight 12.x (see ResetPlate for context)
-    -- and calling it from an addon triggers ADDON_ACTION_BLOCKED.
     if not plate.MyNP_alphaHooked then
         plate.MyNP_alphaHooked = true
         pcall(hooksecurefunc, plate, "SetAlpha", _reassertStashedAlpha)
+    end
+
+    -- 1.36.24: OBSERVE (never call) plate:SetScale so we can re-
+    -- compensate uf.scale when Blizzard changes plate.scale for
+    -- distance/target/global fade.  We ONLY call uf:SetScale in the
+    -- callback — never plate:SetScale (protected).  Using pcall on
+    -- the install itself in case a future patch makes plate:SetScale
+    -- unhookable for addons.
+    if not plate.MyNP_scaleObserved then
+        plate.MyNP_scaleObserved = true
+        pcall(hooksecurefunc, plate, "SetScale", function(self, s)
+            pcall(function()
+                local child = self.UnitFrame
+                if not child then return end
+                local target = child.MyNP_targetScale
+                if target == nil then return end
+                local plateScale = s or 1.0
+                if plateScale <= 0 then plateScale = 1.0 end
+                local ufWant = target / plateScale
+                local cur = child.GetScale and child:GetScale() or 1.0
+                if math.abs(cur - ufWant) < 0.01 then return end
+                pcall(child.SetScale, child, ufWant)
+            end)
+        end)
     end
 
     -- Hook the healthbar's SetStatusBarColor so our friendly-color
