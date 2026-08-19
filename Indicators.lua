@@ -1682,26 +1682,37 @@ function ns:UpdateIndicators(plate, unit)
 
     if healerCfg and healerCfg.enabled == "1"
        and (IsHealer(unit) or healerTest) then
-        local tex = _GetHealer(plate)
-        if tex then
-            _ApplyMarker(tex, anchorFrame, healerCfg)
+        local marker = _GetHealer(plate)
+        if marker then
+            _ApplyMarker(marker, anchorFrame, healerCfg)
+            -- 1.36.21: _GetHealer now returns a container Frame
+            -- (BBP-parity isolation layer for forbidden plates), so
+            -- SetDesaturated / SetVertexColor must target the child
+            -- texture (marker.icon), not the Frame itself.  Prior to
+            -- 1.36.21 these were called directly on the return value;
+            -- once we made it a Frame in 1.36.19 those calls threw
+            -- (silently swallowed by the pcall at Discovery.lua:582)
+            -- and the whole per-plate indicator branch bailed — which
+            -- is why the friendly healer cross ALSO disappeared.
+            local drawable = marker.icon or marker
             local c = healerCfg.color
             if c then
-                tex:SetDesaturated(true)
-                tex:SetVertexColor(c[1] or 1, c[2] or 1, c[3] or 1, c[4] or 1)
+                pcall(drawable.SetDesaturated, drawable, true)
+                pcall(drawable.SetVertexColor, drawable,
+                      c[1] or 1, c[2] or 1, c[3] or 1, c[4] or 1)
             else
                 -- Default colours: friendly = native green, enemy = red
-                tex:SetDesaturated(not isFriend)
+                pcall(drawable.SetDesaturated, drawable, not isFriend)
                 if isFriend then
-                    tex:SetVertexColor(1, 1, 1, 1)
+                    pcall(drawable.SetVertexColor, drawable, 1, 1, 1, 1)
                 else
-                    tex:SetVertexColor(1, 0.15, 0.15, 1)
+                    pcall(drawable.SetVertexColor, drawable, 1, 0.15, 0.15, 1)
                 end
             end
-            tex:Show()
+            pcall(marker.Show, marker)
         end
     elseif plate.MyNP_HealerMarker then
-        plate.MyNP_HealerMarker:Hide()
+        pcall(plate.MyNP_HealerMarker.Hide, plate.MyNP_HealerMarker)
     end
 
     -- CLASS icon -----------------------------------------------------
