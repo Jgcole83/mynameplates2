@@ -904,11 +904,32 @@ local function _GetHealer(plate)
     if plate.MyNP_HealerMarker then return plate.MyNP_HealerMarker end
     local uf = plate.UnitFrame
     if not uf then return nil end
-    if _IsForbidden(plate, uf) then return nil end
-    local tex = _NewMarker(uf, "greencross")
-    tex:SetSize(14, 14)
+    -- 1.36.18: no _IsForbidden guard here.  Enemy arena plates in
+    -- retail Midnight 12.x are "forbidden" from the moment they
+    -- spawn — the class-icon path only works on them because its
+    -- texture was created for the plate frame BEFORE the plate was
+    -- ever forbidden (during Blizzard's initial plate setup), then
+    -- cached on plate.MyNP_ClassMarker so subsequent forbidden-guard
+    -- checks are short-circuited.  The healer cross never had a
+    -- pre-forbidden creation window: it's only requested when
+    -- RefreshHealerCrosses concludes the plate is a healer, and by
+    -- then the plate is already forbidden — so every call returned
+    -- nil and no cross ever appeared.  Wrap creation in pcall so
+    -- if a specific plate genuinely refuses texture parenting we
+    -- fail soft instead of erroring, but let the try happen.
+    local ok, tex = pcall(uf.CreateTexture, uf, nil, "OVERLAY", nil, 7)
+    if not ok or not tex then return nil end
+    pcall(tex.SetAtlas, tex, "greencross")
+    pcall(tex.SetSize, tex, 14, 14)
     -- Trim away ugly white pixels around the atlas border.
-    tex:SetTexCoord(0.1953125, 0.8046875, 0.1953125, 0.8046875)
+    pcall(tex.SetTexCoord, tex, 0.1953125, 0.8046875, 0.1953125, 0.8046875)
+    -- Decouple from parent alpha animations (same reason class icon
+    -- does this — prevents flicker during target-fade / in-combat
+    -- alpha ramps on adjacent plates from dragging the cross to 0).
+    if tex.SetIgnoreParentAlpha then
+        pcall(tex.SetIgnoreParentAlpha, tex, true)
+    end
+    pcall(tex.Hide, tex)
     plate.MyNP_HealerMarker = tex
     return tex
 end
