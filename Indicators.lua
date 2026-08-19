@@ -904,55 +904,31 @@ local function _GetHealer(plate)
     if plate.MyNP_HealerMarker then return plate.MyNP_HealerMarker end
     local uf = plate.UnitFrame
     if not uf then return nil end
-    -- 1.36.19: BBP-parity creation for forbidden-plate compatibility.
-    -- Confirmed by reading BetterBlizzPlates/midnight/modules/classIcon.lua
-    -- (BBP.ClassIndicator, line ~508): BBP creates class/healer icons
-    -- on enemy arena plates via an intermediate isolation Frame:
-    --
-    --     frame.classIndicator = CreateFrame("Frame", nil, frame)
-    --     frame.classIndicator.icon = frame.classIndicator:CreateTexture(...)
-    --     frame.classIndicator:SetIgnoreParentAlpha(true)
-    --
-    -- The intermediate Frame lets Blizzard's engine parent textures to
-    -- forbidden UnitFrames without the child texture inheriting the
-    -- forbidden state — which is why BBP indicators render on enemy
-    -- arena plates in retail Midnight 12.x while our direct
-    -- uf:CreateTexture path silently produced invisible textures.
-    -- No _IsForbidden guard: BBP has none, BBF's healer module has
-    -- none, and both proven-good addons render correctly on forbidden
-    -- frames.  Every step is pcall-guarded so a rare plate that
-    -- rejects a specific call still fails soft rather than erroring.
-    local containerOk, container = pcall(CreateFrame, "Frame", nil, uf)
-    if not containerOk or not container then return nil end
-    pcall(container.SetSize, container, 14, 14)
-    if container.SetIgnoreParentAlpha then
-        pcall(container.SetIgnoreParentAlpha, container, true)
-    end
-    local texOk, tex = pcall(container.CreateTexture, container, nil, "OVERLAY", nil, 7)
-    if not texOk or not tex then return nil end
-    pcall(tex.SetAtlas, tex, "greencross")
-    pcall(tex.SetAllPoints, tex, container)
+    -- 1.36.22: revert to the v1.24.0 bare-texture path.  Confirmed by
+    -- inspecting the user's Desktop\MyNamePlates\Indicators.lua (last
+    -- version that rendered the enemy healer cross correctly on their
+    -- retail install): direct uf:CreateTexture, no intermediate Frame,
+    -- no _IsForbidden guard.  The BBP-parity container Frame path
+    -- (v1.36.19-v1.36.21) was overengineered — the class-icon path in
+    -- the SAME file uses the same bare-texture pattern and renders on
+    -- enemy arena plates, which proves uf:CreateTexture works on those
+    -- plates in retail Midnight 12.x.  Every setter is pcall-guarded
+    -- so a plate that genuinely refuses a call fails soft.
+    local tex = _NewMarker(uf, "greencross")
+    if not tex then return nil end
+    pcall(tex.SetSize, tex, 14, 14)
     -- Trim away ugly white pixels around the atlas border.
     pcall(tex.SetTexCoord, tex, 0.1953125, 0.8046875, 0.1953125, 0.8046875)
-    -- IMPORTANT: do NOT tex:Hide() here.  Textures inherit visibility
-    -- from their parent Frame — an explicit Hide() on the texture is
-    -- persistent, so a later container:Show() would show the Frame
-    -- but leave the inner texture invisible (that was the v1.36.19
-    -- regression that broke both friendly and enemy crosses).
-    -- Hide the CONTAINER instead: while hidden, the texture is
-    -- invisible (parent-cascaded); on marker:Show() the whole thing
-    -- becomes visible in one go.
-    pcall(container.Hide, container)
-    -- _ApplyMarker (line ~1005) drives ClearAllPoints + SetPoint on
-    -- the returned object using cfg.anchor/xOffset/yOffset/scale.
-    -- Return the CONTAINER Frame so scale + placement affect the whole
-    -- indicator (matching BBP's classIndicator frame-level Set*
-    -- operations), and expose the underlying texture on .icon so
-    -- _ApplyHealerMarkerInner can route SetDesaturated/SetVertexColor
-    -- to the drawable.
-    container.icon = tex
-    plate.MyNP_HealerMarker = container
-    return container
+    -- 1.36.19 also introduced SetIgnoreParentAlpha to match the class
+    -- icon's flicker immunity during target-fade / in-combat alpha
+    -- ramps.  Keep that improvement — it doesn't affect the render
+    -- path, only prevents the cross from following the UnitFrame's
+    -- alpha animator.
+    if tex.SetIgnoreParentAlpha then
+        pcall(tex.SetIgnoreParentAlpha, tex, true)
+    end
+    plate.MyNP_HealerMarker = tex
+    return tex
 end
 
 ----------------------------------------------------------------------
@@ -1183,16 +1159,14 @@ local function _ApplyHealerMarkerInner()
     local plate    = _healerApplyState.plate
     local isFriend = _healerApplyState.isFriend
     local cfg      = _healerApplyState.cfg
-    -- 1.36.19: _GetHealer now returns a container Frame (BBP-parity
-    -- isolation layer for forbidden plates); the drawable texture
-    -- lives on .icon.  Fall back to `marker` itself for legacy /
-    -- test-mode plates where the returned object is still a bare
-    -- Texture (Blizzard's Texture:SetDesaturated / SetVertexColor
-    -- would be the direct target in that case).
-    local marker = _GetHealer(plate)
-    if not marker then return end
-    _ApplyMarker(marker, _SafeAnchorFor(plate), cfg)
-    local tex = marker.icon or marker
+    -- 1.36.22: _GetHealer returns a bare Texture again (v1.24.0 path).
+    -- Direct Texture:SetDesaturated / SetVertexColor / Show — this is
+    -- the exact call sequence the user's Desktop\MyNamePlates working
+    -- reference uses.  Every call pcall-wrapped so a rare plate that
+    -- refuses a specific method fails soft.
+    local tex = _GetHealer(plate)
+    if not tex then return end
+    _ApplyMarker(tex, _SafeAnchorFor(plate), cfg)
     local c = cfg.color
     if c then
         pcall(tex.SetDesaturated, tex, true)
@@ -1206,7 +1180,7 @@ local function _ApplyHealerMarkerInner()
             pcall(tex.SetVertexColor, tex, 1, 0.15, 0.15, 1)
         end
     end
-    pcall(marker.Show, marker)
+    pcall(tex.Show, tex)
 end
 
 local function _ApplyHealerMarkerOnPlate(plate, isFriend, cfg)
@@ -1682,34 +1656,26 @@ function ns:UpdateIndicators(plate, unit)
 
     if healerCfg and healerCfg.enabled == "1"
        and (IsHealer(unit) or healerTest) then
-        local marker = _GetHealer(plate)
-        if marker then
-            _ApplyMarker(marker, anchorFrame, healerCfg)
-            -- 1.36.21: _GetHealer now returns a container Frame
-            -- (BBP-parity isolation layer for forbidden plates), so
-            -- SetDesaturated / SetVertexColor must target the child
-            -- texture (marker.icon), not the Frame itself.  Prior to
-            -- 1.36.21 these were called directly on the return value;
-            -- once we made it a Frame in 1.36.19 those calls threw
-            -- (silently swallowed by the pcall at Discovery.lua:582)
-            -- and the whole per-plate indicator branch bailed — which
-            -- is why the friendly healer cross ALSO disappeared.
-            local drawable = marker.icon or marker
+        -- 1.36.22: bare Texture return from _GetHealer (v1.24.0 path),
+        -- so SetDesaturated / SetVertexColor call directly on tex.
+        local tex = _GetHealer(plate)
+        if tex then
+            _ApplyMarker(tex, anchorFrame, healerCfg)
             local c = healerCfg.color
             if c then
-                pcall(drawable.SetDesaturated, drawable, true)
-                pcall(drawable.SetVertexColor, drawable,
+                pcall(tex.SetDesaturated, tex, true)
+                pcall(tex.SetVertexColor, tex,
                       c[1] or 1, c[2] or 1, c[3] or 1, c[4] or 1)
             else
                 -- Default colours: friendly = native green, enemy = red
-                pcall(drawable.SetDesaturated, drawable, not isFriend)
+                pcall(tex.SetDesaturated, tex, not isFriend)
                 if isFriend then
-                    pcall(drawable.SetVertexColor, drawable, 1, 1, 1, 1)
+                    pcall(tex.SetVertexColor, tex, 1, 1, 1, 1)
                 else
-                    pcall(drawable.SetVertexColor, drawable, 1, 0.15, 0.15, 1)
+                    pcall(tex.SetVertexColor, tex, 1, 0.15, 0.15, 1)
                 end
             end
-            pcall(marker.Show, marker)
+            pcall(tex.Show, tex)
         end
     elseif plate.MyNP_HealerMarker then
         pcall(plate.MyNP_HealerMarker.Hide, plate.MyNP_HealerMarker)
