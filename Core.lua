@@ -350,14 +350,44 @@ end
 -- gets overwritten within a frame.  We hook UpdateAnchors and reassert
 -- our value inside — the same technique BBP uses (midnight/BetterBlizz-
 -- Plates.lua:9580 HookHealthbarHeight + line 2634 AdjustHealthBarHeight).
+--
+-- 1.36.27: extended to also enforce per-plate WIDTH.  Blizzard's
+-- C_NamePlate.SetNamePlateSize applies width GLOBALLY; there is no
+-- per-plate width API.  For categories that opt in (currently just
+-- enemyNPCs, but the mechanism is category-agnostic) we override the
+-- visible-bar width via HealthBarsContainer:SetWidth in the same
+-- UpdateAnchors hook, keyed off a per-uf stash (uf.MyNP_dimsWidth /
+-- uf.MyNP_dimsHeight) written by Discovery.lua's ApplyOverrides when
+-- the plate is classified into a category with dims overrides.  Nil
+-- stash = "inherit global" = current behavior unchanged.
+--
+-- Note: this affects only the VISIBLE bar.  Click-box size stays
+-- global (there's no way around that on Blizzard's API), so a very
+-- narrow per-cat width will still have the standard click box for
+-- selection.  That's a fine trade-off for the intent (visual only).
 local function _applyBarHeightToFrame(frame)
     if not frame then return end
     if frame.IsForbidden and frame:IsForbidden() then return end
     local hbc = frame.HealthBarsContainer
     if not hbc then return end
-    local h = tonumber(MyNamePlatesDB and MyNamePlatesDB.plateSize and MyNamePlatesDB.plateSize.height)
-    if not h then return end
-    pcall(hbc.SetHeight, hbc, h)
+
+    -- Height: per-uf stash wins over global.  Global default falls back
+    -- to MyNamePlatesDB.plateSize.height (the Plate Size tab).
+    local h = tonumber(frame.MyNP_dimsHeight)
+    if not h then
+        h = tonumber(MyNamePlatesDB and MyNamePlatesDB.plateSize
+                     and MyNamePlatesDB.plateSize.height)
+    end
+    if h then pcall(hbc.SetHeight, hbc, h) end
+
+    -- Width: only applied when a per-plate override exists.  Global
+    -- width is driven by C_NamePlate.SetNamePlateSize elsewhere and
+    -- we don't want to fight it on plates that DON'T have an override.
+    -- Blizzard's UpdateAnchors will restore the global width naturally
+    -- when a plate transitions to a category without an override
+    -- (Discovery.lua clears MyNP_dimsWidth in that case).
+    local w = tonumber(frame.MyNP_dimsWidth)
+    if w then pcall(hbc.SetWidth, hbc, w) end
 end
 
 local _barHeightHookInstalled = false
@@ -374,6 +404,14 @@ local function ApplyBarHeight()
     for _, plate in ipairs(C_NamePlate.GetNamePlates()) do
         _applyBarHeightToFrame(plate.UnitFrame)
     end
+end
+
+-- 1.36.27: expose _applyBarHeightToFrame under a name that reflects
+-- its new dual-purpose role (width + height).  Discovery.lua calls
+-- this after writing per-plate stashes so changes take effect
+-- immediately instead of waiting for the next UpdateAnchors fire.
+function ns:ApplyDimensionsToFrame(frame)
+    _applyBarHeightToFrame(frame)
 end
 
 local function FlushPending()
@@ -480,6 +518,39 @@ function ns:SetCategoryAlpha(id, value)
     local cat = MyNamePlatesDB.categories[id]
     if not cat then return end
     cat.alpha = value
+    if ns.RefreshActiveNameplates then ns:RefreshActiveNameplates() end
+end
+
+-- 1.36.27: per-category plate dimensions.  Nil DB value = "inherit
+-- global width/height from the Plate Size tab" (the pre-1.36.27
+-- behavior for every plate).  Setting a value writes a numeric
+-- override that Discovery.lua stashes on the plate's uf whenever
+-- the plate is classified into this category — the UpdateAnchors
+-- hook in _applyBarHeightToFrame reads that stash on every anchor
+-- refresh.  UI currently exposes this on the Enemy NPCs tab
+-- (Categories.lua { dimensions = true }); the data model is
+-- category-agnostic so other tabs can opt in later.
+function ns:GetCategoryWidth(id)
+    local cat = MyNamePlatesDB.categories[id]
+    return cat and tonumber(cat.width) or nil
+end
+
+function ns:GetCategoryHeight(id)
+    local cat = MyNamePlatesDB.categories[id]
+    return cat and tonumber(cat.height) or nil
+end
+
+function ns:SetCategoryWidth(id, value)
+    local cat = MyNamePlatesDB.categories[id]
+    if not cat then return end
+    cat.width = value            -- nil clears the override
+    if ns.RefreshActiveNameplates then ns:RefreshActiveNameplates() end
+end
+
+function ns:SetCategoryHeight(id, value)
+    local cat = MyNamePlatesDB.categories[id]
+    if not cat then return end
+    cat.height = value
     if ns.RefreshActiveNameplates then ns:RefreshActiveNameplates() end
 end
 

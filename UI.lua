@@ -299,6 +299,20 @@ local ALPHA_ENTRY = { key = "alpha", label = "Opacity (this category)",
                       tooltip = "Opacity multiplier for nameplates in this category. 1.00 = no override.",
                       min = 0.0, max = 1.0, step = 0.05, default = 1.0 }
 
+-- 1.36.27: per-category plate dimensions.  Ranges match the global
+-- Plate Size sliders (CVars.lua ns.PLATE_SIZE) so a user who's
+-- already comfortable with those knows the scale of the values here.
+-- These are absolute pixel values applied on top of any category
+-- scale multiplier — a 130-wide plate scaled to 1.2 renders 156px
+-- wide.  Only shown on tabs with { dimensions = true } in
+-- Categories.lua (currently Enemy NPCs).
+local WIDTH_ENTRY  = { key = "width",  label = "Width (this category, px)",
+                       tooltip = "Overrides the visible healthbar width for plates on this tab only.  Global Plate Size width still governs every other tab.  Click 'Reset to global' to clear the override.",
+                       min = 50, max = 300, step = 1, default = 110 }
+local HEIGHT_ENTRY = { key = "height", label = "Height (this category, px)",
+                       tooltip = "Overrides the visible healthbar height for plates on this tab only.  Global Plate Size height still governs every other tab.  Click 'Reset to global' to clear the override.",
+                       min = 2,  max = 40,  step = 1, default = 10  }
+
 ----------------------------------------------------------------------
 -- 1.35.1: Shared BBP-parity totem indicator controls.
 --
@@ -530,6 +544,54 @@ local function AddCategoryControls(content, def, startY)
         function(v) ns:SetCategoryAlpha(def.id, v) end)
     s2:SetPoint("TOPLEFT", 8, y - 14)
     y = y - 44
+
+    -- 1.36.27: per-category width / height sliders (opt-in via
+    -- def.dimensions on the Categories.lua entry).  Nil DB value =
+    -- inherit global; the slider shows the global fallback in that
+    -- case so it never displays as "0px wide".  Reset button clears
+    -- the override.
+    if def.dimensions then
+        local function globalW()
+            return tonumber(MyNamePlatesDB and MyNamePlatesDB.plateSize
+                            and MyNamePlatesDB.plateSize.width) or 110
+        end
+        local function globalH()
+            return tonumber(MyNamePlatesDB and MyNamePlatesDB.plateSize
+                            and MyNamePlatesDB.plateSize.height) or 10
+        end
+
+        local sw = MakeSlider(content, WIDTH_ENTRY,
+            function() return ns:GetCategoryWidth(def.id) or globalW() end,
+            function(v) ns:SetCategoryWidth(def.id, v) end)
+        sw:SetPoint("TOPLEFT", 8, y - 14)
+        local swReset = CreateFrame("Button", nil, content, "UIPanelButtonTemplate")
+        swReset:SetSize(140, 20)
+        swReset:SetPoint("LEFT", sw, "RIGHT", 20, 0)
+        swReset:SetText("Reset to global")
+        swReset:SetScript("OnClick", function()
+            ns:SetCategoryWidth(def.id, nil)
+            if ns.RefreshUI then ns:RefreshUI() end
+        end)
+        AttachTooltip(swReset, "Reset width",
+            "Clears the per-category width override on this tab; the global Plate Size width will apply again.")
+        y = y - 44
+
+        local sh = MakeSlider(content, HEIGHT_ENTRY,
+            function() return ns:GetCategoryHeight(def.id) or globalH() end,
+            function(v) ns:SetCategoryHeight(def.id, v) end)
+        sh:SetPoint("TOPLEFT", 8, y - 14)
+        local shReset = CreateFrame("Button", nil, content, "UIPanelButtonTemplate")
+        shReset:SetSize(140, 20)
+        shReset:SetPoint("LEFT", sh, "RIGHT", 20, 0)
+        shReset:SetText("Reset to global")
+        shReset:SetScript("OnClick", function()
+            ns:SetCategoryHeight(def.id, nil)
+            if ns.RefreshUI then ns:RefreshUI() end
+        end)
+        AttachTooltip(shReset, "Reset height",
+            "Clears the per-category height override on this tab; the global Plate Size height will apply again.")
+        y = y - 44
+    end
 
     return y
 end

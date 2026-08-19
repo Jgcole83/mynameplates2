@@ -101,7 +101,8 @@ ns.CATEGORIES = {
     { id = "enemyNPCs",           label = "Enemy NPCs",
       kind = "master", cvar = nil,
       hostile = true,  defaultEnabled = "1",
-      blurb = "Regular hostile NPCs (target dummies, world mobs, dungeon trash, etc.) AND any summon whose specific type we couldn't identify.  Enemy Players has its own tab above." },
+      dimensions = true,   -- 1.36.27: UI renders per-cat width/height sliders
+      blurb = "Regular hostile NPCs (target dummies, world mobs, dungeon trash, etc.) AND any summon whose specific type we couldn't identify.  Enemy Players has its own tab above.  Width / Height sliders override the global Plate Size settings for plates on this tab only." },
 
     { id = "enemyPets",           label = "Enemy Pets (master)",
       kind = "master", cvar = "nameplateShowEnemyPets",

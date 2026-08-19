@@ -629,6 +629,25 @@ local function ApplyOverrides(info)
         end
     end
 
+    -- 1.36.27: per-category plate dimensions.  Stash the category's
+    -- width / height override on the uf so Core.lua's UpdateAnchors
+    -- hook (_applyBarHeightToFrame) can reassert them on every anchor
+    -- refresh.  Nil override = "inherit global" — clear any prior
+    -- stash so recycled plates transitioning to a category without
+    -- overrides fall back to Blizzard's engine width and the global
+    -- height slider.  Also poke ApplyDimensionsToFrame directly so
+    -- the change lands immediately (before waiting for the next
+    -- UpdateAnchors fire, which can be several frames on idle plates).
+    if uf and not (uf.IsForbidden and uf:IsForbidden()) then
+        local wOverride = tonumber(cat.width)
+        local hOverride = tonumber(cat.height)
+        uf.MyNP_dimsWidth  = wOverride    -- nil = inherit global
+        uf.MyNP_dimsHeight = hOverride    -- nil = inherit global height slider
+        if ns.ApplyDimensionsToFrame then
+            pcall(ns.ApplyDimensionsToFrame, ns, uf)
+        end
+    end
+
     -- Cosmetic indicators (target arrow, healer cross) — live in
     -- Indicators.lua; safe to call even on plates we don't manage.
     if ns.UpdateIndicators and info.unit then
@@ -939,6 +958,12 @@ local function ResetPlate(plate)
        and not (uf.IsForbidden and uf:IsForbidden()) then
         uf.MyNP_targetAlpha = nil
         uf.MyNP_targetScale = nil
+        -- 1.36.27: also clear the per-category dimension stash so a
+        -- recycled plate doesn't inherit the previous unit's width /
+        -- height override.  Blizzard's next UpdateAnchors fire on the
+        -- new unit will restore normal engine sizing.
+        uf.MyNP_dimsWidth  = nil
+        uf.MyNP_dimsHeight = nil
         uf:SetAlpha(1.0)
         uf:SetScale(1.0)
     end
