@@ -303,12 +303,25 @@ local function ApplyCVar(cvar, value)
     C_CVar.SetCVar(cvar, tostring(value))
 end
 
--- 1.36.5: retail Midnight 12.x uses the unified SetNamePlateSize
--- (Blizzard removed the split friendly/enemy setters).  We call
--- SetNamePlateSize which applies to BOTH plate types.  If we're
--- running on a client that still has the old separate setters
--- (legacy/preservation retail), fall through to them so this file
--- stays compatible with both.
+-- 1.36.6: two independent paths, one per dimension, because Blizzard's
+-- SetNamePlateSize in Midnight 12.x only affects visible width — the
+-- height parameter resizes the invisible click box while the visible
+-- bar height is driven independently by their internal anchor logic.
+--
+--   * WIDTH is applied via C_NamePlate.SetNamePlateSize(width, BOX_H)
+--     with BOX_H fixed at a click-box-friendly value so we don't shrink
+--     the click box below the visible bar (which breaks click-targeting).
+--
+--   * HEIGHT is applied per-plate via HealthBarsContainer:SetHeight,
+--     hooked inside NamePlateUnitFrameMixin:UpdateAnchors so Blizzard
+--     can't overwrite it on the next anchor refresh.  See
+--     ApplyBarHeight / _installBarHeightHook below.
+--
+-- Legacy clients (pre-Midnight retail / classic) still expose the split
+-- friendly/enemy setters; we fall through to them so the width path
+-- stays compatible with older client versions.
+local NAMEPLATE_BOX_HEIGHT = 45      -- click-box height (invisible)
+
 local function ApplyPlateSize()
     local ps = MyNamePlatesDB and MyNamePlatesDB.plateSize
     if not ps then return end
@@ -317,16 +330,49 @@ local function ApplyPlateSize()
         return
     end
     if not C_NamePlate then return end
-    local w = tonumber(ps.width)  or 110
-    local h = tonumber(ps.height) or 45
+    local w = tonumber(ps.width) or 110
     if C_NamePlate.SetNamePlateSize then
-        pcall(C_NamePlate.SetNamePlateSize, w, h)
+        pcall(C_NamePlate.SetNamePlateSize, w, NAMEPLATE_BOX_HEIGHT)
     elseif C_NamePlate.SetNamePlateFriendlySize then
         -- Legacy retail path — pre-Midnight clients still expose the
         -- split setters.  Apply the same value to both so behavior
         -- matches the unified path.
-        pcall(C_NamePlate.SetNamePlateFriendlySize, w, h)
-        pcall(C_NamePlate.SetNamePlateEnemySize,    w, h)
+        pcall(C_NamePlate.SetNamePlateFriendlySize, w, NAMEPLATE_BOX_HEIGHT)
+        pcall(C_NamePlate.SetNamePlateEnemySize,    w, NAMEPLATE_BOX_HEIGHT)
+    end
+end
+
+-- 1.36.6: per-plate visible-bar-height enforcement.  Passing height to
+-- C_NamePlate.SetNamePlateSize only resizes the click box in Midnight,
+-- so the actual visible bar has to be resized on the HealthBarsContainer
+-- directly.  Blizzard drives this height from NamePlateUnitFrameMixin:
+-- UpdateAnchors every time it fires, which means a one-shot SetHeight
+-- gets overwritten within a frame.  We hook UpdateAnchors and reassert
+-- our value inside — the same technique BBP uses (midnight/BetterBlizz-
+-- Plates.lua:9580 HookHealthbarHeight + line 2634 AdjustHealthBarHeight).
+local function _applyBarHeightToFrame(frame)
+    if not frame then return end
+    if frame.IsForbidden and frame:IsForbidden() then return end
+    local hbc = frame.HealthBarsContainer
+    if not hbc then return end
+    local h = tonumber(MyNamePlatesDB and MyNamePlatesDB.plateSize and MyNamePlatesDB.plateSize.height)
+    if not h then return end
+    pcall(hbc.SetHeight, hbc, h)
+end
+
+local _barHeightHookInstalled = false
+local function _installBarHeightHook()
+    if _barHeightHookInstalled then return end
+    if not (NamePlateUnitFrameMixin and NamePlateUnitFrameMixin.UpdateAnchors) then return end
+    hooksecurefunc(NamePlateUnitFrameMixin, "UpdateAnchors", _applyBarHeightToFrame)
+    _barHeightHookInstalled = true
+end
+
+local function ApplyBarHeight()
+    _installBarHeightHook()
+    if not (C_NamePlate and C_NamePlate.GetNamePlates) then return end
+    for _, plate in ipairs(C_NamePlate.GetNamePlates()) do
+        _applyBarHeightToFrame(plate.UnitFrame)
     end
 end
 
@@ -367,7 +413,11 @@ end
 
 function ns:SetPlateSize(key, value)
     MyNamePlatesDB.plateSize[key] = value
-    ApplyPlateSize()
+    if key == "height" then
+        ApplyBarHeight()
+    else
+        ApplyPlateSize()
+    end
 end
 
 ----------------------------------------------------------------------
@@ -488,18 +538,22 @@ function ns:ApplyAll()
         end
     end
 
-    -- Plate size: skip when values are still at our addon defaults,
-    -- otherwise we'd force Blizzard's *small* nameplate size (110x45)
-    -- even when the player has Large Nameplates enabled — Blizzard's
-    -- actual default is 145x45 (or 185 with Large Nameplates on) per
-    -- BBP's midnight source, and calling SetNamePlateSize with the
-    -- smaller value shrinks the click box below the visible plate and
-    -- breaks click-targeting.  Only apply when the user has explicitly
-    -- resized away from 110x45.
+    -- Plate width: skip when at our default 110 — otherwise we'd force
+    -- Blizzard's *small* nameplate width even when the player has Large
+    -- Nameplates enabled (Blizzard's actual default is 145 or 185 with
+    -- Large Nameplates on per BBP's midnight source).  Calling
+    -- SetNamePlateSize with the smaller value shrinks the click box
+    -- below the visible plate and breaks click-targeting.  Only apply
+    -- when the user has explicitly widened.
     local ps = MyNamePlatesDB.plateSize
-    if ps and (ps.width ~= 110 or ps.height ~= 45) then
+    if ps and ps.width ~= 110 then
         ApplyPlateSize()
     end
+    -- Plate bar height: always install the UpdateAnchors hook so any
+    -- future config change takes effect on the next anchor refresh.
+    -- The hook body reads the DB fresh each time, so it's idempotent
+    -- and self-updating.  Cheap: one SetHeight call per anchor refresh.
+    ApplyBarHeight()
 
     -- Per-category master CVars (visibility toggles).  Skip CVar-less
     -- categories like Hunter Pets — their "enabled" flag is enforced by
@@ -600,6 +654,33 @@ f:SetScript("OnEvent", function(_, event, arg1)
                 ps.enemyHeight    = nil
             end
             MyNamePlatesDB._plateSizeUnified = true
+        end
+
+        -- 1.36.6 one-shot migration: `height`'s semantics changed from
+        -- "click-box height passed to SetNamePlateSize" (which visibly
+        -- did nothing in Midnight — see the CVars.lua header for the
+        -- gory details) to "visible healthbar height applied via
+        -- HealthBarsContainer:SetHeight per plate".  The old default
+        -- was 45 and the slider range went up to 120; the new default
+        -- is 10 with a max of 40.  If we leave existing users' saved
+        -- height at the old value, their bar shoots up to 45px on next
+        -- login — which is enormous and looks broken.
+        --
+        -- Strategy: if the stored height is ≥ 40 (i.e. anywhere near
+        -- the old default range), treat that as "user was flailing at
+        -- a slider that didn't work" and reset to the new default 10.
+        -- Values below 40 might have been intentional (someone testing
+        -- lower values pre-1.36.6) so we keep them.  Guarded by a
+        -- version flag so this runs exactly once per DB.
+        if not MyNamePlatesDB._plateBarHeightMigrated then
+            local ps = MyNamePlatesDB.plateSize
+            if ps then
+                local h = tonumber(ps.height)
+                if h and h >= 40 then
+                    ps.height = 10
+                end
+            end
+            MyNamePlatesDB._plateBarHeightMigrated = true
         end
     elseif event == "PLAYER_LOGIN" then
         ns:ApplyAll()

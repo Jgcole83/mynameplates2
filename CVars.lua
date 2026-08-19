@@ -66,31 +66,42 @@ ns.GLOBAL = {
 }
 
 ----------------------------------------------------------------------
--- Plate width / height (set via C_NamePlate, not a CVar).
+-- Plate width / height.
 --
--- 1.36.5: Blizzard REMOVED C_NamePlate.SetNamePlateFriendlySize /
--- SetNamePlateEnemySize in retail Midnight 12.x — the only working
--- API is now the unified C_NamePlate.SetNamePlateSize(width, height)
--- which sets BOTH friendly and enemy plates to the same dimensions.
--- (Confirmed via BBP midnight/BetterBlizzPlates.lua:6002 comment:
--- "Blizzard decided to remove the API to control different widths for
--- Friendly/Enemy Nameplates in Midnight.")
+-- 1.36.6: two independent code paths, because in Midnight 12.x these
+-- two dimensions are driven by entirely different APIs:
 --
--- Pre-1.36.5 the addon exposed four sliders (friendlyWidth,
--- friendlyHeight, enemyWidth, enemyHeight) but silently no-op'd
--- because we called the removed APIs.  The four old keys are
--- migrated to the two new unified keys in Core.lua's ADDON_LOADED
--- handler (max of friendly/enemy for each dimension).
+--   * WIDTH → C_NamePlate.SetNamePlateSize(width, BOX_H).  Visibly
+--     resizes the healthbar and the click box together.  The old
+--     split friendly/enemy setters were removed in Midnight so
+--     everything goes through the unified call.
 --
--- Defaults track BBP: 110x45 is our "unconfigured" sentinel that
--- Core.lua's ApplyAll uses to SKIP calling the API — that leaves
--- Blizzard's own defaults (which depend on the Large Nameplates
--- CVar: 145 or 185 for width) untouched.  Any deviation from 110x45
--- triggers enforcement + the SetNamePlateSize reassert hook.
+--   * HEIGHT → HealthBarsContainer:SetHeight(h) per plate, hooked
+--     inside NamePlateUnitFrameMixin:UpdateAnchors so Blizzard
+--     can't overwrite it on the next anchor refresh.  Passing a
+--     custom height to SetNamePlateSize only changes the invisible
+--     click box — the visible bar height is driven separately by
+--     Blizzard's own NamePlateVerticalScale CVar times a constant,
+--     which is why the pre-1.36.6 height slider silently no-op'd.
+--     BBP hit the same wall (see midnight/BetterBlizzPlates.lua
+--     :5646-5648, where their own "box height" slider is disabled
+--     with the comment "Disabled until I figure out stuff") and
+--     solved it the same way we do here via their HookHealthbarHeight
+--     + AdjustHealthBarHeight (lines 2634 / 9580).
+--
+-- Defaults:
+--   * width = 110 is our "unconfigured" sentinel — Core.lua's
+--     ApplyAll skips SetNamePlateSize at this value so Blizzard's
+--     Large Nameplates CVar can drive the width (145 without,
+--     185 with) as usual.
+--   * height = 10 matches BBP's default (4 * 2.7 = 10.8, rounded).
+--     Applied unconditionally via the UpdateAnchors hook.  The
+--     hook is cheap (a single SetHeight call per anchor refresh)
+--     and idempotent.
 ----------------------------------------------------------------------
 ns.PLATE_SIZE = {
-    { key = "width",  label = "Nameplate Width",  default = 110, min = 50, max = 300, step = 1,
+    { key = "width",  label = "Nameplate Width", default = 110, min = 50, max = 300, step = 1,
       tooltip = "Width of the nameplate healthbar in pixels.  Applies to BOTH friendly and enemy plates — Blizzard removed the ability to set them separately in Midnight 12.x.  Leave at 110 to use Blizzard's default (which is 145 with Large Nameplates off, 185 with it on)." },
-    { key = "height", label = "Nameplate Height", default = 45,  min = 10, max = 120, step = 1,
-      tooltip = "Height of the nameplate healthbar in pixels.  Applies to BOTH friendly and enemy plates.  Leave at 45 to use Blizzard's default." },
+    { key = "height", label = "Bar Height",      default = 10,  min = 2,  max = 40,  step = 1,
+      tooltip = "Height of the visible healthbar in pixels.  Applied per-plate via HealthBarsContainer:SetHeight because Blizzard's SetNamePlateSize height parameter in Midnight 12.x only resizes the invisible click box — it does NOT change the visible bar (that's driven separately by the NamePlateVerticalScale CVar).  Default 10 matches Blizzard's own default; drag lower for a thinner bar or higher for a thicker one." },
 }

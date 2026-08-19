@@ -253,17 +253,19 @@ local function BuildGeneralPanel(panel)
     fcNPCs:SetPoint("TOPLEFT", 8, y); y = y - ROW
 
     y = y - 6
-    MakeHeading(content, "Plate Width / Height"):SetPoint("TOPLEFT", 0, y); y = y - 22
-    -- 1.36.5 note: retail Midnight removed the ability to size friendly
-    -- and enemy plates independently.  Both sliders drive the unified
-    -- C_NamePlate.SetNamePlateSize API so the same dimensions apply to
-    -- every plate.  Leave both at 110 x 45 (default) to fall back to
-    -- Blizzard's own size (which depends on the Large Nameplates CVar).
+    MakeHeading(content, "Plate Width / Bar Height"):SetPoint("TOPLEFT", 0, y); y = y - 22
+    -- 1.36.6 note: retail Midnight drives the two dimensions with
+    -- entirely different APIs.  Width goes through the unified
+    -- C_NamePlate.SetNamePlateSize; visible bar height has to be
+    -- applied per-plate via HealthBarsContainer:SetHeight inside a
+    -- UpdateAnchors hook because Blizzard's height parameter to
+    -- SetNamePlateSize only resizes the invisible click box.  Both
+    -- sliders apply to friendly AND enemy plates.
     local note = MakeLabel(content,
-        "Applies to friendly AND enemy plates (Midnight consolidated these).  Leave at defaults (110 x 45) to use Blizzard's own size.",
+        "Applies to friendly AND enemy plates.  Leave width at 110 to use Blizzard's own default (145 or 185 with Large Nameplates on).  Bar height defaults to 10 (Blizzard's own default) — drag lower for thinner, higher for thicker.",
         { 0.7, 0.7, 0.7 })
     note:SetPoint("TOPLEFT", 8, y - 2)
-    y = y - 22
+    y = y - 32
     for _, e in ipairs(ns.PLATE_SIZE) do
         local s = MakeSlider(content, e,
             function() return ns:GetPlateSize(e.key) end,

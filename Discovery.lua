@@ -1910,10 +1910,10 @@ end
 -- and SetAlpha hooks already cover the same re-apply timing.)
 
 ----------------------------------------------------------------------
--- Plate-size lock.  When the user has customised plate width / height,
--- enforce it against any other addon (BBP, Plater, ElvUI) that calls
+-- Plate-width lock.  When the user has customised plate width, enforce
+-- it against any other addon (BBP, Plater, ElvUI) that calls
 -- C_NamePlate.SetNamePlateSize after us.  We only re-assert when the
--- user has values away from the addon default (110x45).  Skipping the
+-- user has width away from the addon default (110).  Skipping the
 -- default case avoids the click-area bug we hit earlier where forcing
 -- 110x45 shrank the click box below the visible plate (which is
 -- 154x64 on Large Nameplates).
@@ -1923,18 +1923,26 @@ end
 -- SetNamePlateSize survives, and it applies to BOTH plate types.
 -- We hook that; if the client still exposes the old split setters
 -- (legacy retail), we hook those too so the lock works on both.
+--
+-- 1.36.6: visible bar height is no longer enforced through
+-- SetNamePlateSize (that only affects the click box in Midnight —
+-- see Core.lua's ApplyBarHeight for the actual mechanism).  This
+-- hook enforces width only; the second argument to SetNamePlateSize
+-- is a fixed box-height passthrough so the click box doesn't collapse
+-- below the visible bar.
 ----------------------------------------------------------------------
-local function _customSize()
+local NAMEPLATE_BOX_HEIGHT_PASSTHROUGH = 45
+
+local function _customWidth()
     local ps = MyNamePlatesDB and MyNamePlatesDB.plateSize
     if not ps then return nil end
     local w = tonumber(ps.width)
-    local h = tonumber(ps.height)
-    if not (w and h) then return nil end
-    -- Skip enforcement when at our default 110x45 — Blizzard's actual
+    if not w then return nil end
+    -- Skip enforcement when at our default 110 — Blizzard's actual
     -- default depends on the Large Nameplates CVar and is what we want
     -- in the unconfigured case.
-    if w == 110 and h == 45 then return nil end
-    return w, h
+    if w == 110 then return nil end
+    return w
 end
 
 local function HookSizeLock(funcName)
@@ -1942,11 +1950,11 @@ local function HookSizeLock(funcName)
     local guard = false
     hooksecurefunc(C_NamePlate, funcName, function(width, height)
         if guard then return end
-        local wantW, wantH = _customSize()
+        local wantW = _customWidth()
         if not wantW then return end
-        if width ~= wantW or height ~= wantH then
+        if width ~= wantW then
             guard = true
-            pcall(C_NamePlate[funcName], wantW, wantH)
+            pcall(C_NamePlate[funcName], wantW, NAMEPLATE_BOX_HEIGHT_PASSTHROUGH)
             guard = false
         end
     end)
