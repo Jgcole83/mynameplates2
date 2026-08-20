@@ -1733,6 +1733,15 @@ function ns:UpdateIndicators(plate, unit)
     -- HEALER cross ----------------------------------------------------
     local healerCfg
     local isFriend = UnitIsFriend("player", unit)
+    -- 1.36.37: force isFriend=false for arena-bound anonymised plates
+    -- so we always use I.healerEnemy config (red cross) instead of
+    -- falling into the friendly branch when UnitIsFriend returns nil
+    -- on a redacted token.  Arena enemies are, by definition,
+    -- non-friend players — same rationale as _HealerEnemyBody and
+    -- _ClassifyForbiddenBody's arena-override branches.
+    if ns.GetArenaUnitForPlate and ns:GetArenaUnitForPlate(plate) then
+        isFriend = false
+    end
     if isFriend then
         healerCfg = I.healerFriendly
     else
@@ -1749,8 +1758,29 @@ function ns:UpdateIndicators(plate, unit)
         healerTest = ns.testMode.healerEnemy
     end
 
+    -- 1.36.37: use the plate-aware _IsHealerForPlate instead of raw
+    -- IsHealer(unit).  On retail 12.x anonymised arena enemy plates,
+    -- IsHealer(unit) always returns false (UnitGroupRolesAssigned
+    -- returns "" for the opposing team, _IsHealerByArenaSpec's
+    -- UnitIsUnit fails on redacted tokens, and the tooltip may not
+    -- yet contain the spec/class line at gate open).  Without this
+    -- change, RefreshHealerCrosses would correctly stamp the enemy
+    -- cross via the ArenaMap-binding path, then UpdateIndicators
+    -- would immediately HIDE it 100 ms later via the `elseif
+    -- plate.MyNP_HealerMarker then plate.MyNP_HealerMarker:Hide()`
+    -- branch below — because IsHealer(unit) returned false for the
+    -- same anonymised token.
+    --
+    -- _IsHealerForPlate is a strict superset of IsHealer(unit): it
+    -- tries IsHealer(unit) first (preserving friendly-party-healer
+    -- detection), then falls through to ArenaMap-binding +
+    -- GetArenaOpponentSpec — the same authoritative signal
+    -- _HealerEnemyBody uses.  Class icons already use the analogous
+    -- plate-aware helper (_GetClassFile) which is why classes
+    -- survive UpdateIndicators's per-frame rewrite while the healer
+    -- cross previously did not.
     if healerCfg and healerCfg.enabled == "1"
-       and (IsHealer(unit) or healerTest) then
+       and (_IsHealerForPlate(plate, unit) or healerTest) then
         -- 1.36.22: bare Texture return from _GetHealer (v1.24.0 path),
         -- so SetDesaturated / SetVertexColor call directly on tex.
         local tex = _GetHealer(plate)
