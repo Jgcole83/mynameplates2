@@ -958,48 +958,76 @@ local function _GetClassIcon(plate)
     return tex
 end
 
--- Returns the english classFile ("WARRIOR", "MAGE", etc.).  Tries
--- the per-plate unit first (works on most plates), then the
--- ArenaMap canonical token for forbidden anonymized arena plates.
--- Strips secret-string returns (UnitClass on anonymised units in
--- retail Midnight 12.x returns secret values even when the unit
--- token itself is non-secret) — the caller does string.lower() on
--- this value, which taints if the input is secret.
+-- Returns the english classFile ("WARRIOR", "MAGE", etc.).
+--
+-- 1.36.33: reordered to match the v1.24.0 / v1.34.2 working
+-- reference (`C:\Users\Jgcol\OneDrive\Desktop\MyNamePlates`, and
+-- our own git tag before the arena-cross debugging chain).
+-- The two v1.24.0 paths (direct UnitClass on the plate token,
+-- then UnitClass on the ArenaMap canonical arenaN token) are the
+-- PRIMARY resolvers.  The per-plate class cache and the
+-- ARENA_PREP-via-linkage lookup are ADDITIVE fallbacks that only
+-- fire when both v1.24.0 paths returned nothing usable.
+--
+-- Why the reorder matters: the additive caches are reliable
+-- WHEN POPULATED, but at gate open they're usually empty (no
+-- target/mouseover captures yet, and _plateByArena is set only
+-- from definitive UnitIsUnit hits — which don't fire for fully
+-- anonymised arena tokens).  Under the previous order, an empty
+-- additive path would fall through to UnitClass(arenaUnit), but
+-- when it WASN'T empty (rare early captures) it could contaminate
+-- results if ArenaMap had mis-linked the plate in the interim.
+-- Under the v1.24.0 order, direct token data always wins over
+-- inference — matching the pattern the user confirmed works.
+--
+-- Every path strips secret-string returns (UnitClass on
+-- anonymised units in retail Midnight 12.x returns secret
+-- values even when the unit token itself is non-secret) —
+-- callers do string.lower() on this value, which taints if the
+-- input is secret.
 local function _GetClassFile(plate, unit)
+    -- v1.24.0 PRIMARY #1: direct UnitClass on the plate's own token.
+    -- Non-secret returns are authoritative.
     if unit then
         local _, classFile = UnitClass(unit)
         if classFile and not (issecretvalue and issecretvalue(classFile)) then
             return classFile
         end
     end
-    -- 1.36.13: per-plate class cache (populated on target/mouseover
-    -- capture in Labels.lua's _CaptureSpecFromToken).  Preferred over
-    -- ArenaMap because a direct-capture classFile is 100% reliable,
-    -- whereas ArenaMap's fingerprint match can mis-tag a plate to a
-    -- different opponent's slot in ambiguous teams (e.g. 2 casters
-    -- both using mana with anonymised class fields) and return that
-    -- opponent's class here.  Once the user has interacted with the
-    -- plate even once, the cached class permanently wins.
-    if plate and ns.GetClassByPlate then
-        local cached = ns:GetClassByPlate(plate)
-        if cached then return cached end
-    end
-    -- 1.36.15: definitive arena linkage -> ARENA_PREP classFile.
-    -- Only ever set from target/focus/mouseover UnitIsUnit hits so
-    -- guaranteed correct when populated.  Fills the gap when the
-    -- per-plate class cache is empty (e.g. UnitClass on the captured
-    -- token returned secret) but we DO know the arena slot.
-    if plate and ns.GetArenaByPlate then
-        local idx = ns:GetArenaByPlate(plate)
-        local prep = idx and ns.ARENA_PREP and ns.ARENA_PREP[idx]
-        if prep and prep.classFile then return prep.classFile end
-    end
+    -- v1.24.0 PRIMARY #2: UnitClass on the ArenaMap canonical
+    -- arenaN token.  Works when the per-plate token is anonymised
+    -- but ArenaMap has bound the plate to a slot (direct
+    -- UnitIsUnit or fingerprint).  arenaN tokens themselves are
+    -- never secret, and UnitClass on them returns the real class
+    -- file for the linked slot.
     local arenaUnit = plate and ns:GetArenaUnitForPlate(plate)
     if arenaUnit then
         local _, cf = UnitClass(arenaUnit)
         if cf and not (issecretvalue and issecretvalue(cf)) then
             return cf
         end
+    end
+    -- 1.36.13 ADDITIVE FALLBACK: per-plate class cache populated
+    -- by Labels.lua's _CaptureSpecFromToken on target/mouseover.
+    -- Only reached when both v1.24.0 paths returned nothing (fully
+    -- anonymised plate with no ArenaMap binding).  Cache values
+    -- are always correct because they come from non-secret
+    -- target/mouseover tokens; the risk was letting them PREEMPT
+    -- direct UnitClass data, which is what 1.36.33 fixes by
+    -- moving them below the primary paths.
+    if plate and ns.GetClassByPlate then
+        local cached = ns:GetClassByPlate(plate)
+        if cached then return cached end
+    end
+    -- 1.36.15 ADDITIVE FALLBACK: definitive arena linkage ->
+    -- ARENA_PREP classFile.  Set only from definitive UnitIsUnit
+    -- hits (target/focus/mouseover matching arena1..3), so
+    -- guaranteed correct when populated.  Fills the gap when
+    -- everything above returned nil.
+    if plate and ns.GetArenaByPlate then
+        local idx = ns:GetArenaByPlate(plate)
+        local prep = idx and ns.ARENA_PREP and ns.ARENA_PREP[idx]
+        if prep and prep.classFile then return prep.classFile end
     end
     return nil
 end
@@ -1236,6 +1264,18 @@ local function _HealerEnemyBody()
     end
 end
 
+-- 1.36.33: helper to detect an already-stamped healer marker so
+-- additive fallback passes can skip plates the primary v1.24.0
+-- walk already handled.  A double-stamp is technically idempotent
+-- but skipping the extra work also prevents any future additive
+-- path from over-writing a correct primary stamp with a wrong one.
+local function _PlateHasHealerMark(plate)
+    local m = plate and plate.MyNP_HealerMarker
+    if not m then return false end
+    local ok, shown = pcall(m.IsShown, m)
+    return ok and shown and true or false
+end
+
 function ns:RefreshHealerCrosses()
     if not (MyNamePlatesDB and MyNamePlatesDB.indicators) then return end
     local I = MyNamePlatesDB.indicators
@@ -1254,7 +1294,10 @@ function ns:RefreshHealerCrosses()
         return
     end
 
-    -- Friendly healers: party1..party4 (+ player)
+    -- ── Friendly healers ──────────────────────────────────────────
+    -- Party1..4 (+ player).  Same as the v1.24.0 reference.  Non-
+    -- forbidden plates so we can trust UnitIsUnit / GetNamePlateForUnit
+    -- directly.
     for i = 0, 4 do
         local unit = (i == 0) and "player" or ("party" .. i)
         if UnitExists(unit) and IsHealer(unit) then
@@ -1265,152 +1308,107 @@ function ns:RefreshHealerCrosses()
         end
     end
 
-    -- 1.36.15: ARENA_PREP + LINKAGE path (highest-of-highest confidence).
-    -- Iterate the prep cache (populated at ARENA_PREP_OPPONENT_SPECIALIZATIONS
-    -- from Blizzard's authoritative GetArenaOpponentSpec).  For each slot
-    -- flagged isHealer:
-    --   1. Prefer the definitive _plateByArena[i] linkage — set only from
-    --      target/focus/mouseover UnitIsUnit hits, so 100% reliable when
-    --      populated.
-    --   2. Fall through to a class-match walk: if we know the healer's
-    --      classFile from prep AND that class is unique in the enemy team,
-    --      any plate whose per-plate class cache matches must be the
-    --      healer.  Uses ns:GetClassByPlate so it only lights up for
-    --      plates the user has already interacted with.
-    --   3. Third fallback: UnitClass on plate.unit (non-anonymised plates).
-    -- Failing all three, the per-plate spec cache + plate-walk paths
-    -- below still run.
-    if _IsInArena() and I.healerEnemy and I.healerEnemy.enabled == "1"
-       and ns.ARENA_PREP then
-        -- Determine which healer class(es) are UNIQUE in the enemy team.
-        -- If two opponents share a class (extremely rare but legal in
-        -- shuffle / duplicate-class cheese comps) we can't identify by
-        -- class alone, so we require uniqueness.
-        local classCount, healerSlots = {}, {}
-        for i = 1, 3 do
-            local p = ns.ARENA_PREP[i]
-            if p and p.classFile then
-                classCount[p.classFile] = (classCount[p.classFile] or 0) + 1
-                if p.isHealer then healerSlots[#healerSlots + 1] = i end
-            end
-        end
-        for _, i in ipairs(healerSlots) do
-            pcall(function()
-                local prep = ns.ARENA_PREP[i]
-                if not prep then return end
-                local plate = ns.GetPlateByArena and ns:GetPlateByArena(i)
-                -- 1.36.17: gate-open path.  _plateByArena is populated
-                -- ONLY by definitive UnitIsUnit hits (target/focus/
-                -- mouseover / RescanDirect) — which don't fire in
-                -- retail Midnight 12.x for anonymised arena plates at
-                -- gate open.  But ArenaMap's fingerprint match (BBP
-                -- arenaid.lua port) DOES bind plate <-> arena slot at
-                -- gate open, and the spec-label path already trusts
-                -- that binding via GetArenaUnitForPlate (which reads
-                -- AM.plateToIndex).  Since the user's spec labels are
-                -- correct out of the gate, the same fingerprint map
-                -- is trustworthy enough for the healer cross too.
-                -- Fall back to AM's reverse map so the cross uses the
-                -- SAME source of truth as the spec label — if the
-                -- spec on that plate reads "Restoration Shaman", the
-                -- cross MUST land on that same plate.
-                if not plate and AM and AM.indexToPlate then
-                    plate = AM.indexToPlate[i]
-                end
-                if not plate and prep.classFile and classCount[prep.classFile] == 1
-                   and C_NamePlate and C_NamePlate.GetNamePlates then
-                    for _, p in ipairs(C_NamePlate.GetNamePlates(true)) do
-                        local matched
-                        if ns.GetClassByPlate then
-                            local cached = ns:GetClassByPlate(p)
-                            if cached == prep.classFile then matched = p end
-                        end
-                        if not matched then
-                            local uf = p.UnitFrame
-                            local u  = uf and (uf.unit or uf.displayedUnit)
-                            if u then
-                                local okC, _, cf = pcall(UnitClass, u)
-                                if okC and cf
-                                   and not (issecretvalue and issecretvalue(cf))
-                                   and cf == prep.classFile then
-                                    matched = p
-                                end
-                            end
-                        end
-                        if matched then plate = matched; break end
-                    end
-                end
-                if plate then
-                    _ApplyHealerMarkerOnPlate(plate, false, I.healerEnemy)
-                end
-            end)
-        end
+    if not (I.healerEnemy and I.healerEnemy.enabled == "1"
+            and C_NamePlate.GetNamePlates) then
+        return
     end
 
-    -- 1.36.14: PER-PLATE SPEC CACHE path (highest confidence).
-    -- v1.36.13 tried a direct arena1..3 loop, but in retail
-    -- Midnight 12.x `UnitExists("arenaN")` returns false for
-    -- anonymised enemy tokens and `C_NamePlate.GetNamePlateForUnit
-    -- ("arenaN")` returns nil for the same — so that path could
-    -- never reach _ApplyHealerMarkerOnPlate.  This replacement
-    -- uses the ONE signal we know is authoritative for the plate
-    -- the user actually sees: the per-plate spec name cache
+    -- ── v1.24.0 PRIMARY: enemy plate walk ────────────────────────
+    -- The exact pattern from the user's working reference
+    -- (`C:\Users\Jgcol\OneDrive\Desktop\MyNamePlates\Indicators.lua`,
+    -- v1.24.0, and our own git tag v1.34.2 before the 1.36.11-
+    -- 1.36.17 arena chain of experimental fixes).  For each
+    -- visible plate:
+    --   1. Read per-plate `unit` (or `displayedUnit`) if present.
+    --   2. Resolve friend / player status via that unit, with an
+    --      ArenaMap-binding override (arena enemies are, by
+    --      definition, non-friend players even when the token is
+    --      anonymised).
+    --   3. Call _IsHealerForPlate(plate, unit) which uses:
+    --        a. IsHealer(unit) → role / arena-spec / tooltip
+    --        b. GetArenaOpponentSpec via ArenaMap.plateToIndex
+    --        c. _IsHealerByTooltip on the canonical arenaN token
+    -- This is the SOURCE OF TRUTH.  Everything below is additive
+    -- and gated on _PlateHasHealerMark(plate) so it can only ADD
+    -- crosses to plates the primary walk didn't handle.
+    for _, plate in ipairs(C_NamePlate.GetNamePlates(true)) do
+        _healerLoopState.plate = plate
+        pcall(_HealerEnemyBody)
+    end
+
+    -- ── ADDITIVE #1: per-plate spec cache ─────────────────────────
+    -- 1.36.14 gate-open path.  The per-plate spec name cache is
     -- populated by Labels.lua's _CaptureSpecFromToken from the
-    -- non-secret target/mouseover tooltip.  If the cached spec
-    -- name is a healer spec (Discipline, Restoration, Holy,
-    -- Preservation, Mistweaver — all unique to healers), the
-    -- plate is unambiguously the healer.  Stamp the cross.
-    --
-    -- This piggybacks on the same fix that made the spec label
-    -- render correctly: once the user has interacted with the
-    -- healer once, both the correct spec text AND the healer
-    -- cross land on the correct plate for the rest of the match.
-    -- No arena-token dependency, no ArenaMap dependency.
-    --
-    -- Runs BEFORE the plate-walk so a definitive per-plate hit
-    -- lands first; the plate-walk still runs after as the pre-
-    -- 1.36.13 fallback for the "user has never targeted the
-    -- healer" edge case (relies on ArenaMap and can be wrong).
-    if I.healerEnemy and I.healerEnemy.enabled == "1"
-       and ns.GetSpecByPlate and C_NamePlate and C_NamePlate.GetNamePlates then
+    -- non-secret target/mouseover tooltip.  When it says
+    -- "Discipline" / "Restoration" / "Holy" / "Preservation" /
+    -- "Mistweaver" (all unique to healers), the plate is
+    -- unambiguously the healer.  This is ADDITIVE — it only
+    -- stamps plates the primary walk missed (e.g. ArenaMap has
+    -- no binding for the plate, so _IsHealerForPlate returned
+    -- false).  Skip plates the primary already stamped.
+    if ns.GetSpecByPlate then
         pcall(_BuildHealerSpecNames)
         local specOnly = ns.HEALER_SPEC_ONLY_NAMES
         if specOnly then
             for _, plate in ipairs(C_NamePlate.GetNamePlates(true)) do
-                pcall(function()
-                    local uf   = plate.UnitFrame
-                    local unit = uf and (uf.unit or uf.displayedUnit)
-                    -- Only enemies.  Friendly plates already had
-                    -- their cross applied by the party1..4 loop
-                    -- above; a friendly healer landing in the
-                    -- per-plate cache would otherwise get the
-                    -- enemy-red variant here.  UnitIsFriend is
-                    -- pcall-guarded because on rare edge cases
-                    -- (anonymised secret unit token) it can taint
-                    -- if called directly.
-                    if unit then
-                        local ok, f = pcall(UnitIsFriend, "player", unit)
-                        if ok and f then return end
-                    end
-                    local cached = ns:GetSpecByPlate(plate)
-                    if cached and specOnly[cached] then
-                        _ApplyHealerMarkerOnPlate(plate, false, I.healerEnemy)
-                    end
-                end)
+                if not _PlateHasHealerMark(plate) then
+                    pcall(function()
+                        local uf   = plate.UnitFrame
+                        local unit = uf and (uf.unit or uf.displayedUnit)
+                        -- Only enemies.  Friendly plates were
+                        -- handled by the party loop above.
+                        if unit then
+                            local ok, f = pcall(UnitIsFriend, "player", unit)
+                            if ok and f then return end
+                        end
+                        local cached = ns:GetSpecByPlate(plate)
+                        if cached and specOnly[cached] then
+                            _ApplyHealerMarkerOnPlate(plate, false, I.healerEnemy)
+                        end
+                    end)
+                end
             end
         end
     end
 
-    -- Enemy healers — walk plates and resolve via per-plate uf.unit
-    -- with ArenaMap fallback.  This gives a strict 1:1 plate-to-unit
-    -- mapping so the healer cross always lands on the correct plate,
-    -- and the ArenaMap fallback recovers info from forbidden plates
-    -- whose uf.unit is anonymized in retail Midnight arenas.
-    if I.healerEnemy and I.healerEnemy.enabled == "1"
-       and C_NamePlate.GetNamePlates then
-        for _, plate in ipairs(C_NamePlate.GetNamePlates(true)) do
-            _healerLoopState.plate = plate
-            pcall(_HealerEnemyBody)
+    -- ── ADDITIVE #2: ARENA_PREP + definitive plate linkage ────────
+    -- 1.36.15/17 gate-open path, RESTRICTED to trusted sources only.
+    -- Iterate the prep cache (from Blizzard's authoritative
+    -- GetArenaOpponentSpec) and for every slot flagged isHealer,
+    -- look up the plate via `_plateByArena[i]` — which is set ONLY
+    -- from definitive UnitIsUnit hits (target / focus / mouseover
+    -- / C_NamePlate.GetNamePlateForUnit("arenaN") returning this
+    -- plate).  When populated, it's 100% reliable.
+    --
+    -- 1.36.33: DROPPED the two untrusted fallbacks that made this
+    -- pass mis-stamp:
+    --   * `AM.indexToPlate[i]` (fingerprint-derived) — could bind
+    --     the wrong plate to a slot in ambiguous teams (2 casters
+    --     with same power type and anonymised class), so stamping
+    --     via that binding put the cross on the wrong enemy.  The
+    --     primary v1.24.0 walk above ALREADY consults ArenaMap
+    --     via _IsHealerForPlate → GetArenaUnitForPlate, so if
+    --     the fingerprint binding is correct the cross has already
+    --     been stamped; if the fingerprint binding is wrong,
+    --     stamping through AM.indexToPlate here would just
+    --     compound the error.
+    --   * Class-match walk (find any plate whose class matches
+    --     prep.classFile and the class is unique in the enemy
+    --     team) — depended on GetClassByPlate cache or UnitClass
+    --     on the per-plate token, both of which can misfire when
+    --     multiple opponents share a class (duplicate-class comps
+    --     are legal in shuffle) or when the per-plate token is
+    --     secret and the cache is empty.  This was the primary
+    --     source of "wrong enemy has cross" at gate open.
+    if _IsInArena() and ns.ARENA_PREP and ns.GetPlateByArena then
+        for i = 1, 3 do
+            local prep = ns.ARENA_PREP[i]
+            if prep and prep.isHealer then
+                local plate = ns:GetPlateByArena(i)
+                if plate and not _PlateHasHealerMark(plate) then
+                    _ApplyHealerMarkerOnPlate(plate, false, I.healerEnemy)
+                end
+            end
         end
     end
 end
