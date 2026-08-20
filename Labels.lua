@@ -216,20 +216,73 @@ local function _ResolvePlateNpcID(plate, unit)
     return nil
 end
 
--- Look up the curated record for an npcID.  Prefers the live user-
--- editable table (MyNamePlatesDB.npcs) so runtime `/mnp add` and
--- auto-discovery writes take effect immediately, falls back to the
--- shipped NPC_DATA table.  Guards against secret-tagged fields on
--- the record (unlikely but cheap to enforce).
+-- Look up the curated record for an npcID.  Merges the live user-
+-- editable table (MyNamePlatesDB.npcs) with the shipped NPC_DATA
+-- table so both auto-discovery writes and curated data contribute.
+--
+-- Prior to 1.36.31 this function returned MyNamePlatesDB.npcs[npcID]
+-- OUTRIGHT when it existed, which was a bug: Discovery.lua's auto-
+-- discovery writes bare records ({ name, type, discovered = true }
+-- only) whenever a new totem was seen in the field.  Once the DB
+-- entry existed, it *shadowed* NpcData's curated { spellID, important }
+-- fields for the same npcID.  Step 1 of _ClassifyTotem couldn't find
+-- a spellID, fell through to Step 4 (generic type icon), and every
+-- totem you'd ever encountered in the field ended up with the same
+-- shaman-totem-recall icon.  Fix: return a MERGED view where seed
+-- data fills in the curated fields the DB record is missing.
+-- User-supplied fields (via `/mnp add` or manual DB edits) still
+-- win when they're populated, so this doesn't regress any override
+-- workflow.
 local function _NpcRecord(npcID)
     if not npcID then return nil end
-    local rec
-    if MyNamePlatesDB and MyNamePlatesDB.npcs and MyNamePlatesDB.npcs[npcID] then
-        rec = MyNamePlatesDB.npcs[npcID]
-    elseif ns.NPC_DATA and ns.NPC_DATA[npcID] then
-        rec = ns.NPC_DATA[npcID]
+    local seed = ns.NPC_DATA and ns.NPC_DATA[npcID]
+    local db   = MyNamePlatesDB and MyNamePlatesDB.npcs
+                 and MyNamePlatesDB.npcs[npcID]
+    if not (seed or db) then return nil end
+    if not seed then return db end
+    if not db   then return seed end
+    return {
+        name       = db.name       or seed.name,
+        type       = db.type       or seed.type,
+        spellID    = db.spellID    or seed.spellID,
+        icon       = db.icon       or seed.icon,
+        important  = (db.important ~= nil) and db.important or seed.important,
+        discovered = db.discovered,
+    }
+end
+
+-- 1.36.31: NpcData icon resolution extracted so both the primary
+-- classifier (Step 1 of _ClassifyTotem below) AND the secret-unit
+-- branch of _ApplyTotemIcon can consult the exact same logic without
+-- duplicating the two texture-lookup fallbacks.  Only calls C_Spell.*
+-- on the record's spellID -- never touches Unit* functions -- so it's
+-- safe to invoke on secret-tokened arena plates (no taint risk).
+-- Returns the resolved texture path/id, or nil if the record has no
+-- usable spellID / icon override.
+local function _NpcDataIconForRec(rec)
+    if not rec then return nil end
+    -- Primary: C_Spell.GetSpellTexture(spellID).  Fast path.
+    if rec.spellID and C_Spell and C_Spell.GetSpellTexture then
+        local okI, tex = pcall(C_Spell.GetSpellTexture, rec.spellID)
+        if okI and tex and not (issecretvalue and issecretvalue(tex)) then
+            return tex
+        end
     end
-    return rec
+    -- Fallback: C_Spell.GetSpellInfo(spellID).iconID.  Some PvP-talent
+    -- totem spellIDs (Static Field, Counterstrike, Voodoo, Lightning
+    -- Surge, etc.) return nil from GetSpellTexture when the local
+    -- player isn't a shaman with the talent selected but succeed via
+    -- GetSpellInfo which reads a broader spell table.
+    if rec.spellID and C_Spell and C_Spell.GetSpellInfo then
+        local okS, spellInfo = pcall(C_Spell.GetSpellInfo, rec.spellID)
+        if okS and type(spellInfo) == "table" and spellInfo.iconID
+           and not (issecretvalue and issecretvalue(spellInfo.iconID)) then
+            return spellInfo.iconID
+        end
+    end
+    -- Explicit texture path override (rare).
+    if rec.icon then return rec.icon end
+    return nil
 end
 
 -- Classify a totem-plate's visual treatment.  Priority order (highest
@@ -296,30 +349,10 @@ local function _ClassifyTotem(unit, plate, summonType)
     local recImportant = rec and rec.important or false
 
     -- ── Step 1: NPC_DATA-driven icon ──────────────────────────────────
-    local npcDataIcon
-    if rec then
-        -- Primary: C_Spell.GetSpellTexture(spellID).  Fast path.
-        if rec.spellID and C_Spell and C_Spell.GetSpellTexture then
-            local okI, tex = pcall(C_Spell.GetSpellTexture, rec.spellID)
-            if okI and tex and not (issecretvalue and issecretvalue(tex)) then
-                npcDataIcon = tex
-            end
-        end
-        -- Fallback: C_Spell.GetSpellInfo(spellID).iconID.  Some PvP-
-        -- talent totem spellIDs (Static Field, Counterstrike, Voodoo,
-        -- Lightning Surge, etc.) return nil from GetSpellTexture when
-        -- the local player isn't a shaman with the talent selected but
-        -- succeed via GetSpellInfo which reads a broader spell table.
-        if not npcDataIcon and rec.spellID and C_Spell and C_Spell.GetSpellInfo then
-            local okS, spellInfo = pcall(C_Spell.GetSpellInfo, rec.spellID)
-            if okS and type(spellInfo) == "table" and spellInfo.iconID
-               and not (issecretvalue and issecretvalue(spellInfo.iconID)) then
-                npcDataIcon = spellInfo.iconID
-            end
-        end
-        -- rec.icon = explicit texture path override (rare).
-        if not npcDataIcon and rec.icon then npcDataIcon = rec.icon end
-    end
+    -- Extracted to _NpcDataIconForRec below in 1.36.31 so the secret-
+    -- unit branch of _ApplyTotemIcon can share the same logic (no
+    -- Unit* calls; safe under taint conditions).
+    local npcDataIcon = _NpcDataIconForRec(rec)
     if npcDataIcon then
         if recImportant then
             return npcDataIcon,
@@ -1045,10 +1078,21 @@ _ApplyTotemIcon = function(plate, unit, isFriend)
         end
     end
 
-    -- Skip the classifier entirely on secret unit tokens (Unit*Info calls
-    -- on a secret string can taint us) — render the type-appropriate
-    -- generic icon and colour without probing the unit.  BBP does
-    -- effectively the same when their heuristics come up empty.
+    -- Skip the Unit*-probing classifier steps on secret unit tokens
+    -- (Unit*Info calls on a secret string can taint us) but STILL
+    -- consult NPC_DATA via _NpcDataIconForRec.  That helper only calls
+    -- C_Spell.* on the record's spellID and never touches Unit* --
+    -- safe under taint conditions -- so an anonymised-arena Grounding
+    -- Totem plate whose npcID was captured by the target/mouseover
+    -- pipeline still renders the correct Grounding icon in magenta
+    -- instead of falling back to the shaman-totem-recall generic.
+    --
+    -- 1.36.31: NPC_DATA icon path added to this branch.  Prior to
+    -- this, arena enemy totems ALL rendered with ICON_BY_TYPE["totem"]
+    -- = shaman totem-recall regardless of which totem they were --
+    -- the "all totems get the same icon" report.  With the merged
+    -- _NpcRecord (see comment there) + this branch, captured-npcID
+    -- totems now show their specific spellbook icon.
     --
     -- 1.36.26: even on secret tokens we know summonType (from the
     -- _summonByPlate capture or NPC_DATA lookup done above in
@@ -1057,14 +1101,30 @@ _ApplyTotemIcon = function(plate, unit, isFriend)
     -- totem-recall icon.
     local icon, r, g, b, isImportant, isImportantAura, duration, hasAura
     if issecretvalue and issecretvalue(unit) then
-        icon = ICON_BY_TYPE[st or "totem"] or TOTEM_ICON_GENERIC
-        local col = COLOR_BY_TYPE[st or "totem"] or TOTEM_COLOR_GENERIC
-        if col == TOTEM_COLOR_GENERIC then
-            r, g, b = _GenericColorRGB()
+        local secretNpcID = _ResolvePlateNpcID(plate, unit)
+        local secretRec   = secretNpcID and _NpcRecord(secretNpcID) or nil
+        icon = _NpcDataIconForRec(secretRec)
+        if icon then
+            if secretRec and secretRec.important then
+                r, g, b = TOTEM_COLOR_IMPORTANT[1],
+                          TOTEM_COLOR_IMPORTANT[2],
+                          TOTEM_COLOR_IMPORTANT[3]
+                isImportant = true
+            else
+                r, g, b = _GenericColorRGB()
+                isImportant = false
+            end
         else
-            r, g, b = col[1], col[2], col[3]
+            icon = ICON_BY_TYPE[st or "totem"] or TOTEM_ICON_GENERIC
+            local col = COLOR_BY_TYPE[st or "totem"] or TOTEM_COLOR_GENERIC
+            if col == TOTEM_COLOR_GENERIC then
+                r, g, b = _GenericColorRGB()
+            else
+                r, g, b = col[1], col[2], col[3]
+            end
+            isImportant = false
         end
-        isImportant, isImportantAura, duration, hasAura = false, false, nil, false
+        isImportantAura, duration, hasAura = false, nil, false
     else
         -- 1.36.1: pass plate so _ClassifyTotem can consult NPC_DATA via
         -- _ResolvePlateNpcID.  When we know the npcID, we render the
