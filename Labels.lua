@@ -367,7 +367,19 @@ local function _ClassifyTotem(unit, plate, summonType)
     -- Wrap every Unit* call in pcall — on rare edge cases (unit token
     -- flips secret mid-frame) these can throw and we don't want the
     -- whole label pipeline to fault.
-    if unit then
+    --
+    -- 1.36.32: gate on summonType.  Cast → Capacitor Totem and Channel
+    -- → Psyfiend are only meaningful signals for actual totem/psyfiend
+    -- plates.  A Frost Mage's Mirror Image casting Fireball is NOT a
+    -- Capacitor Totem, and a Hunter pet channeling Barbed Shot is NOT
+    -- a Psyfiend — but the pre-1.36.32 code would mis-classify them
+    -- as such, painting the Capacitor icon in magenta on top of the
+    -- pet plate.  Skip Step 2 entirely for known non-totem/non-psyfiend
+    -- summon types so their Step-4 type-specific icon wins.
+    local castChannelEligible = (not summonType)
+                                or summonType == "totem"
+                                or summonType == "psyfiend"
+    if castChannelEligible and unit then
         local ok1, channeling = pcall(UnitChannelInfo, unit)
         if ok1 and channeling then
             return TOTEM_ICON_PSYFIEND,
@@ -429,7 +441,13 @@ local function _ClassifyTotem(unit, plate, summonType)
     -- Preserve NPC_DATA's `important` flag so the plate still gets
     -- magenta + glow + pulse — better a wrong icon than a lost
     -- arena classification cue.
-    local fallbackIcon = ICON_BY_TYPE[summonType or "totem"] or TOTEM_ICON_GENERIC
+    -- 1.36.32: no "or totem" default here.  Caller (_ApplyTotemIcon)
+    -- already bailed with _FullClearTotemState when _TotemIconType
+    -- returned nil, so summonType is guaranteed non-nil at this point.
+    -- Unknown types (some future summonType not in ICON_BY_TYPE) fall
+    -- through to TOTEM_ICON_GENERIC / TOTEM_COLOR_GENERIC — never to
+    -- the shaman totem-recall icon.
+    local fallbackIcon = ICON_BY_TYPE[summonType] or TOTEM_ICON_GENERIC
     if recImportant then
         return fallbackIcon,
                TOTEM_COLOR_IMPORTANT[1], TOTEM_COLOR_IMPORTANT[2], TOTEM_COLOR_IMPORTANT[3],
@@ -440,7 +458,7 @@ local function _ClassifyTotem(unit, plate, summonType)
     -- back to the user-configurable generic brown for unknown types
     -- and for totems / guardians / minions where the summoner class
     -- can't be determined from summonType alone.
-    local col = COLOR_BY_TYPE[summonType or "totem"] or TOTEM_COLOR_GENERIC
+    local col = COLOR_BY_TYPE[summonType] or TOTEM_COLOR_GENERIC
     local r, g, b
     if col == TOTEM_COLOR_GENERIC then
         r, g, b = _GenericColorRGB()
@@ -585,14 +603,13 @@ local function _TotemIconType(plate, unit)
         local info = ns.GetSummonInfoForUnit and ns:GetSummonInfoForUnit(unit)
         st = info and info.summonType
     end
-    -- 1.36.9: fall back to NpcData's authoritative type BEFORE defaulting
-    -- to "totem".  Fixes a bug where anonymised arena pets whose summon-
-    -- type capture was empty (common on Warlock Observer / Felguard,
-    -- Hunter pets, etc.) would default to "totem" and get the totem
+    -- 1.36.9: fall back to NpcData's authoritative type BEFORE returning.
+    -- Fixes a bug where anonymised arena pets whose summon-type capture
+    -- was empty (common on Warlock Observer / Felguard, Hunter pets,
+    -- etc.) would inherit whatever the default was and get the totem
     -- icon treatment applied on top of them.  With this lookup, an
     -- Observer plate returns "pet_warlock" and gets correctly filtered
-    -- out by the default cfg.types.pet_warlock = false gate — no
-    -- more Observer plates wearing the generic totem-recall icon.
+    -- out by the default cfg.types.pet_warlock = false gate.
     if not st then
         local npcID = _ResolvePlateNpcID(plate, unit)
         if npcID then
@@ -602,7 +619,16 @@ local function _TotemIconType(plate, unit)
             end
         end
     end
-    return st or "totem"   -- unknown-type summons default to "totem" for gating
+    -- 1.36.32: nil for unresolved plates — no icon overlay applied.
+    -- Old code returned "totem" as a last-resort default, which caused
+    -- Mirror Image, Warlock pets, and any other minion-shape summon
+    -- whose type we couldn't nail down to render the totem overlay
+    -- (magenta recolor + Step-3 helpful-aura icon churn).  Under the
+    -- current rule totems and psyfiend are the ONLY summon types that
+    -- get overlay/recolor treatment; everything else must fall through
+    -- to standard-NPC render.  Returning nil here causes _ApplyTotemIcon
+    -- to bail via _FullClearTotemState.
+    return st
 end
 
 -- 1.34.1 / 1.35.0: shared apply-state upvalue for the pcall'd inner
@@ -1115,8 +1141,15 @@ _ApplyTotemIcon = function(plate, unit, isFriend)
                 isImportant = false
             end
         else
-            icon = ICON_BY_TYPE[st or "totem"] or TOTEM_ICON_GENERIC
-            local col = COLOR_BY_TYPE[st or "totem"] or TOTEM_COLOR_GENERIC
+            -- 1.36.32: no "or totem" default.  _TotemIconType has already
+            -- resolved a non-nil summonType by the time we reach here
+            -- (nil would have bailed at the "if not st then return
+            -- _FullClearTotemState(plate) end" gate above), so we index
+            -- ICON_BY_TYPE / COLOR_BY_TYPE directly and let the generic
+            -- fallbacks below handle any future summonType we haven't
+            -- added a table entry for.
+            icon = ICON_BY_TYPE[st] or TOTEM_ICON_GENERIC
+            local col = COLOR_BY_TYPE[st] or TOTEM_COLOR_GENERIC
             if col == TOTEM_COLOR_GENERIC then
                 r, g, b = _GenericColorRGB()
             else

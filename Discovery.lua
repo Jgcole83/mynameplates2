@@ -268,26 +268,34 @@ local function AutoClassify(unit, guidKind, plate)
 
     if guidKind == "Pet" then return "pet" end
 
-    -- BBP-pattern default: an anonymised minion-shaped unit is almost
-    -- always a totem in retail Midnight 12.x arena/BG.  Blizzard
-    -- anonymises Grounding / Capacitor / Psyfiend / Tremor / Static
-    -- Field aggressively (they're the plates that most reward
-    -- interrupt-cheating), so when every other signal is secret but
-    -- UnitIsMinion still says "yes, this is a stationary summon",
-    -- default to totem to match BBP's assumption at:
-    --   BetterBlizzPlates/midnight/modules/totem.lua:382
+    -- 1.36.32: no longer default anonymised minion-shape summons to
+    -- "totem".  Under the current visual rule (totems and psyfiend are
+    -- the exceptions to the npc rule; every other summon type follows
+    -- the standard-NPC treatment), a false-positive totem classification
+    -- is worse than a missed one.  Mirror Image, Warlock pets, Hunter
+    -- pets, DK ghouls, etc. all pass isMinionShape when their unit
+    -- token is secret-tagged — with the old default they inherited
+    -- the totem overlay, magenta recolor, and (worst of all) the Step
+    -- 3 helpful-aura icon churn.
     --
-    -- Historical note: we used to default to "minion" here (before
-    -- 1.36.0), which was worse — many users zero the "Enemy Minions"
-    -- alpha slider to hide Warlock imp clutter, and that setting was
-    -- accidentally hiding real totems.  Routing to the totems bucket
-    -- instead means the user's "Enemy Totems" slider is what governs
-    -- these plates, which is closer to the intent (arena totems ARE
-    -- exactly what that slider is for).  The user can still target-
-    -- click any misclassified plate; _CaptureSummonFromToken re-
-    -- routes it into its real category on the next TARGET_CHANGED
-    -- event using the non-secret target token.
-    if isMinionShape then return "totem" end
+    -- Real totems still classify correctly via three earlier paths in
+    -- this function: (1) _SafeCT == "Totem" at the top, (2) NPC_DATA
+    -- lookup via _NpcDataType, and (3) the cast/channel branch above
+    -- (Capacitor casts, Psyfiend channels).  For anonymised passive
+    -- totems (Grounding / Earthbind / Tremor) that hit NONE of those
+    -- signals, the plate falls through to the enemyNPCs bucket until
+    -- the user targets or mouseovers it once — at which point
+    -- _CaptureSummonFromToken reads a non-secret token, runs
+    -- AutoClassify with clean data, and reclassifies the plate into
+    -- enemyTotems for the rest of its lifetime.
+    --
+    -- Historical: pre-1.36.0 this defaulted to "minion" (buggy — hid
+    -- real totems when users zeroed the minion alpha slider); 1.36.0
+    -- through 1.36.31 defaulted to "totem" (buggy — false totem
+    -- treatment on Mirror Image and other pets); 1.36.32 returns nil
+    -- so nothing is falsely typed.
+    -- if isMinionShape then return "totem" end
+    -- (intentional: fall through to `return nil` below)
 
     -- NOTHING readable AND not minion-shaped.  Return nil so the
     -- caller (ClassifyPlate) falls through to the generic
