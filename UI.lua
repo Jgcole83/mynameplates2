@@ -1820,6 +1820,17 @@ SlashCmdList["MYNAMEPLATES"] = function(msg)
         if ns.RescanAllPlates then ns:RescanAllPlates() end
         ns:ApplyAll()
         print("|cff00c0ffMyNamePlates|r: rescanned plates and re-applied settings.")
+    elseif msg == "cat" or msg == "category" then
+        -- 1.36.30: diagnose the current target plate's category
+        -- classification.  Use when a Scale / Opacity / Width /
+        -- Height slider on a specific tab doesn't seem to affect the
+        -- plate you see -- the plate may be in a different category
+        -- (e.g. enemyNPCs fallback instead of enemyHunterPets).
+        if ns.DiagCategoryForTarget then
+            ns:DiagCategoryForTarget()
+        else
+            print("|cff00c0ffMyNamePlates|r: DiagCategoryForTarget not available.")
+        end
     elseif msg == "trace" then
         if ns.IsTracing and ns:IsTracing() then
             ns:StopTrace()

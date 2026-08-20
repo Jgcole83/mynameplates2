@@ -34,42 +34,50 @@ ns.CATEGORIES = {
     { id = "friendlyHunterPets",  label = "Friendly Hunter Pets",
       kind = "list",   cvar = nil,
       hostile = false, summonType = "pet_hunter", defaultEnabled = "1",
-      blurb = "Hunter pets only (every family/skin)." },
+      dimensions = true,   -- 1.36.30: per-cat width/height sliders
+      blurb = "Hunter pets only (every family/skin).  Width/Height sliders override the global Plate Size settings for plates on this tab only." },
 
     { id = "friendlyWarlockPets", label = "Friendly Warlock Pets",
       kind = "list",   cvar = nil,
       hostile = false, summonType = "pet_warlock", defaultEnabled = "1",
-      blurb = "Warlock primary demons (Imp, Felhunter, Voidwalker, Succubus, Felguard, etc.)." },
+      dimensions = true,   -- 1.36.30
+      blurb = "Warlock primary demons (Imp, Felhunter, Voidwalker, Succubus, Felguard, etc.).  Width/Height sliders override the global Plate Size settings for plates on this tab only." },
 
     { id = "friendlyDKPets",      label = "Friendly Death Knight Pets",
       kind = "list",   cvar = nil,
       hostile = false, summonType = "pet_dk", defaultEnabled = "1",
-      blurb = "Unholy Death Knight Risen Ghoul." },
+      dimensions = true,   -- 1.36.30
+      blurb = "Unholy Death Knight Risen Ghoul.  Width/Height sliders override the global Plate Size settings for plates on this tab only." },
 
     { id = "friendlyMagePets",    label = "Friendly Mage Pets",
       kind = "list",   cvar = nil,
       hostile = false, summonType = "pet_mage", defaultEnabled = "1",
-      blurb = "Frost Mage Water Elemental." },
+      dimensions = true,   -- 1.36.30
+      blurb = "Frost Mage Water Elemental.  Width/Height sliders override the global Plate Size settings for plates on this tab only." },
 
     { id = "friendlyGuardians",   label = "Friendly Guardians",
       kind = "list",   cvar = "nameplateShowFriendlyGuardians",
       hostile = false, summonType = "guardian", defaultEnabled = "0",
-      blurb = "Larger semi-controllable summons (Earth Elemental, Infernal, etc.)." },
+      dimensions = true,   -- 1.36.30
+      blurb = "Larger semi-controllable summons (Earth Elemental, Infernal, etc.).  Width/Height sliders override the global Plate Size settings for plates on this tab only." },
 
     { id = "friendlyTotems",      label = "Friendly Totems",
       kind = "list",   cvar = "nameplateShowFriendlyTotems",
       hostile = false, summonType = "totem",    defaultEnabled = "0",
-      blurb = "Totems and totem-like stationary summons (Statues, etc.). Psyfiend has its own tab." },
+      dimensions = true,   -- 1.36.30
+      blurb = "Totems and totem-like stationary summons (Statues, etc.). Psyfiend has its own tab.  Width/Height sliders override the global Plate Size settings for plates on this tab only." },
 
     { id = "friendlyPsyfiend",    label = "Friendly Psyfiend",
       kind = "list",   cvar = nil,
       hostile = false, summonType = "psyfiend", defaultEnabled = "1",
-      blurb = "Priest Psyfiend (the constant fear-spamming target you usually want to highlight)." },
+      dimensions = true,   -- 1.36.30
+      blurb = "Priest Psyfiend (the constant fear-spamming target you usually want to highlight).  Width/Height sliders override the global Plate Size settings for plates on this tab only." },
 
     { id = "friendlyMinions",     label = "Friendly Minions",
       kind = "list",   cvar = "nameplateShowFriendlyMinions",
       hostile = false, summonType = "minion",   defaultEnabled = "0",
-      blurb = "Smaller summoned units (Wild Imps, Dreadstalkers, Observers, etc.)." },
+      dimensions = true,   -- 1.36.30
+      blurb = "Smaller summoned units (Wild Imps, Dreadstalkers, Observers, etc.).  Width/Height sliders override the global Plate Size settings for plates on this tab only." },
 
     -- ── Enemy ─────────────────────────────────────────────────────────────
     -- 1.36.25: split from the old single "Enemy Players & NPCs" master
@@ -112,47 +120,56 @@ ns.CATEGORIES = {
     { id = "enemyHunterPets",     label = "Enemy Hunter Pets",
       kind = "list",   cvar = nil,
       hostile = true,  summonType = "pet_hunter", defaultEnabled = "1",
-      blurb = "Enemy Hunter pets only." },
+      dimensions = true,   -- 1.36.30
+      blurb = "Enemy Hunter pets only.  Width/Height sliders override the global Plate Size settings for plates on this tab only." },
 
     { id = "enemyWarlockPets",    label = "Enemy Warlock Pets",
       kind = "list",   cvar = nil,
       hostile = true,  summonType = "pet_warlock", defaultEnabled = "1",
-      blurb = "Enemy Warlock primary demons." },
+      dimensions = true,   -- 1.36.30
+      blurb = "Enemy Warlock primary demons.  Width/Height sliders override the global Plate Size settings for plates on this tab only." },
 
     { id = "enemyDKPets",         label = "Enemy Death Knight Pets",
       kind = "list",   cvar = nil,
       hostile = true,  summonType = "pet_dk", defaultEnabled = "1",
-      blurb = "Enemy Unholy Death Knight Risen Ghoul." },
+      dimensions = true,   -- 1.36.30
+      blurb = "Enemy Unholy Death Knight Risen Ghoul.  Width/Height sliders override the global Plate Size settings for plates on this tab only." },
 
     { id = "enemyMagePets",       label = "Enemy Mage Pets",
       kind = "list",   cvar = nil,
       hostile = true,  summonType = "pet_mage", defaultEnabled = "1",
-      blurb = "Enemy Frost Mage Water Elemental." },
+      dimensions = true,   -- 1.36.30
+      blurb = "Enemy Frost Mage Water Elemental.  Width/Height sliders override the global Plate Size settings for plates on this tab only." },
 
     { id = "enemyGuardians",      label = "Enemy Guardians",
       kind = "list",   cvar = "nameplateShowEnemyGuardians",
       hostile = true,  summonType = "guardian", defaultEnabled = "1",
-      blurb = "Larger enemy summons (Earth Elemental, Infernal, Demonic Tyrant, etc.)." },
+      dimensions = true,   -- 1.36.30
+      blurb = "Larger enemy summons (Earth Elemental, Infernal, Demonic Tyrant, etc.).  Width/Height sliders override the global Plate Size settings for plates on this tab only." },
 
     { id = "enemyTotems",         label = "Enemy Totems",
       kind = "list",   cvar = "nameplateShowEnemyTotems",
       hostile = true,  summonType = "totem",    defaultEnabled = "1",
-      blurb = "Enemy totems and Statues. Psyfiend has its own tab." },
+      dimensions = true,   -- 1.36.30
+      blurb = "Enemy totems and Statues. Psyfiend has its own tab.  Width/Height sliders override the global Plate Size settings for plates on this tab only." },
 
     { id = "enemyPsyfiend",       label = "Enemy Psyfiend",
       kind = "list",   cvar = nil,
       hostile = true,  summonType = "psyfiend", defaultEnabled = "1",
-      blurb = "Priority kill target — drop opacity slider to make it stand out, or scale it up. Pre-seeded with bright red highlight." },
+      dimensions = true,   -- 1.36.30
+      blurb = "Priority kill target — drop opacity slider to make it stand out, or scale it up. Pre-seeded with bright red highlight.  Width/Height sliders override the global Plate Size settings for plates on this tab only." },
 
     { id = "enemyMinions",        label = "Enemy Minions",
       kind = "list",   cvar = "nameplateShowEnemyMinions",
       hostile = true,  summonType = "minion",   defaultEnabled = "1",
-      blurb = "Smaller enemy summons (Wild Imps, Dreadstalkers, etc.)." },
+      dimensions = true,   -- 1.36.30
+      blurb = "Smaller enemy summons (Wild Imps, Dreadstalkers, etc.).  Width/Height sliders override the global Plate Size settings for plates on this tab only." },
 
     { id = "enemyMinor",          label = "Enemy Minor (Minus)",
       kind = "list",   cvar = "nameplateShowEnemyMinus",
       hostile = true,  summonType = "minor",    defaultEnabled = "1",
-      blurb = "Tiny low-HP summons (Imp variants, Felguard adds, etc.)." },
+      dimensions = true,   -- 1.36.30
+      blurb = "Tiny low-HP summons (Imp variants, Felguard adds, etc.).  Width/Height sliders override the global Plate Size settings for plates on this tab only." },
 }
 
 -- Quick lookup: id -> definition

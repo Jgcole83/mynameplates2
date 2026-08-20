@@ -1470,6 +1470,89 @@ function ns:DumpActive()
 end
 
 ----------------------------------------------------------------------
+-- /mnp cat — diagnose category classification for the current target
+--
+-- Purpose: when a user reports "the Scale slider on Enemy Hunter Pets
+-- doesn't do anything", the most common cause is that the plate they
+-- see isn't actually in `enemyHunterPets` — it's in `enemyNPCs`
+-- (unclassifiable summon fallback), `enemyPlayers` (misclassified),
+-- or some other category.  Dragging the Scale slider on the wrong
+-- tab silently no-ops on that plate.
+--
+-- Output: the target's unit token, resolved category (with label),
+-- summonType, npcID + name, live scale/alpha/width/height values
+-- from the DB, and the effective uf.scale / plate.scale so the user
+-- can see whether our compensation is being stomped or the plate is
+-- simply in a different category than they thought.
+----------------------------------------------------------------------
+function ns:DiagCategoryForTarget()
+    local function p(s) print("|cff00c0ffMyNamePlates|r " .. s) end
+
+    if not UnitExists("target") then
+        p("cat: no target — target a plate first (mouseover doesn't work here; you need an actual target).")
+        return
+    end
+
+    local plate = C_NamePlate and C_NamePlate.GetNamePlateForUnit
+                  and C_NamePlate.GetNamePlateForUnit("target")
+    if not plate then
+        p("cat: target has no visible nameplate (out of range, hidden by CVar, or forbidden).")
+        return
+    end
+
+    local uf   = plate.UnitFrame
+    local unit = uf and (uf.unit or uf.displayedUnit) or "target"
+    local info = active[unit]
+    p(("cat: target plate diag"):format())
+    p(("  unit token       = %s"):format(tostring(unit)))
+    p(("  UnitName(target) = %s"):format(tostring(UnitName("target"))))
+
+    if not info then
+        p("  active[unit]     = <no managed info>")
+        p("  (plate not in ns.active — Discovery hasn't classified it yet or it's forbidden)")
+        return
+    end
+
+    local def  = ns.CATEGORY_BY_ID[info.categoryID]
+    local cat  = MyNamePlatesDB and MyNamePlatesDB.categories
+                 and MyNamePlatesDB.categories[info.categoryID]
+    p(("  categoryID       = %s (%s)"):format(
+        tostring(info.categoryID), def and def.label or "?"))
+    p(("  summonType       = %s"):format(tostring(info.summonType)))
+    p(("  npcID / name     = %s / %s"):format(
+        tostring(info.npcID), tostring(info.name)))
+    if cat then
+        p(("  cat.scale        = %s"):format(tostring(cat.scale)))
+        p(("  cat.alpha        = %s"):format(tostring(cat.alpha)))
+        p(("  cat.width  ovr   = %s"):format(tostring(cat.width)))
+        p(("  cat.height ovr   = %s"):format(tostring(cat.height)))
+        p(("  cat.enabled      = %s"):format(tostring(cat.enabled)))
+    else
+        p("  cat.*            = <DB missing this category — reset?>")
+    end
+    if uf then
+        p(("  uf.scale         = %.3f  (stashed target %s)"):format(
+            (uf.GetScale and uf:GetScale()) or -1,
+            tostring(uf.MyNP_targetScale)))
+        p(("  uf.alpha         = %.3f  (stashed target %s)"):format(
+            (uf.GetAlpha and uf:GetAlpha()) or -1,
+            tostring(uf.MyNP_targetAlpha)))
+        p(("  uf.MyNP_dims     = w %s / h %s"):format(
+            tostring(uf.MyNP_dimsWidth), tostring(uf.MyNP_dimsHeight)))
+    end
+    if plate then
+        p(("  plate.scale      = %.3f"):format(
+            (plate.GetScale and plate:GetScale()) or -1))
+        p(("  plate.alpha      = %.3f"):format(
+            (plate.GetAlpha and plate:GetAlpha()) or -1))
+    end
+    p(("  effective scale  = plate.scale * uf.scale = %.3f"):format(
+        ((plate.GetScale and plate:GetScale()) or 1) *
+        ((uf and uf.GetScale and uf:GetScale()) or 1)))
+    p("  tip: if cat.scale ≠ effective, the plate is being stomped; if categoryID isn't the tab you're editing, drag that tab's slider instead.")
+end
+
+----------------------------------------------------------------------
 -- Trace mode  ( /mnp trace )
 -- When enabled, every alpha/scale write on a managed plate is logged
 -- with the calling addon, so you can see exactly who is fighting us.
