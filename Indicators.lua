@@ -877,14 +877,29 @@ local function _NewMarker(uf, atlas)
     return tex
 end
 
--- Skip forbidden plates everywhere we'd parent a widget to the uf.
--- CreateTexture as a child of a forbidden frame propagates addon
--- taint to the parent and produces "Interface action failed because
--- of an AddOn" on every subsequent secure action against arena
--- enemies.  Returns true when the plate must NOT be touched.
+-- Skip UnitFrames whose forbidden flag would taint CreateTexture.
+--
+-- 1.36.34: check ONLY the UnitFrame's forbidden status, not the
+-- top-level nameplate's — matching BBP (BetterBlizzPlates.lua
+-- ~5349), our own Labels._IsForbidden, and the explicit v1.24.0
+-- rationale documented in Labels.lua:
+--
+--   In retail Midnight, arena pet & totem plates (and the arena
+--   enemy player plates that carry anonymised unit tokens) can
+--   have a forbidden top-level plate but a NON-forbidden
+--   UnitFrame.  Modifying uf.name / creating textures on the
+--   non-forbidden uf is safe in that case.  Earlier "check both"
+--   behaviour blocked us from rendering on those plates — the
+--   root cause of RefreshClassIcons walking forbidden plates but
+--   _GetClassIcon refusing to create the icon there.
+--
+-- The taint vector is CreateTexture as a child of a forbidden
+-- parent: it propagates the forbidden flag to the child, which
+-- then propagates addon taint on subsequent secure actions.
+-- Since we parent to `uf`, uf's forbidden status is what matters
+-- — plate:IsForbidden() is orthogonal.
 local function _IsForbidden(plate, uf)
-    if plate and plate.IsForbidden and plate:IsForbidden() then return true end
-    if uf    and uf.IsForbidden    and uf:IsForbidden()    then return true end
+    if uf and uf.IsForbidden and uf:IsForbidden() then return true end
     return false
 end
 
@@ -904,16 +919,26 @@ local function _GetHealer(plate)
     if plate.MyNP_HealerMarker then return plate.MyNP_HealerMarker end
     local uf = plate.UnitFrame
     if not uf then return nil end
-    -- 1.36.22: revert to the v1.24.0 bare-texture path.  Confirmed by
-    -- inspecting the user's Desktop\MyNamePlates\Indicators.lua (last
-    -- version that rendered the enemy healer cross correctly on their
-    -- retail install): direct uf:CreateTexture, no intermediate Frame,
-    -- no _IsForbidden guard.  The BBP-parity container Frame path
-    -- (v1.36.19-v1.36.21) was overengineered — the class-icon path in
-    -- the SAME file uses the same bare-texture pattern and renders on
-    -- enemy arena plates, which proves uf:CreateTexture works on those
-    -- plates in retail Midnight 12.x.  Every setter is pcall-guarded
-    -- so a plate that genuinely refuses a call fails soft.
+    -- 1.36.34: restore the _IsForbidden guard to match the v1.24.0
+    -- working reference (Desktop\MyNamePlates\Indicators.lua line
+    -- 662).  The 1.36.22 comment previously claimed v1.24.0 had no
+    -- guard — that was a misread; v1.24.0 clearly guards.  Aligning
+    -- back with the reference also aligns with _GetTarget and
+    -- _GetClassIcon which have kept the guard the entire time.
+    --
+    -- _IsForbidden is uf-only as of 1.36.34, so this permits crosses
+    -- on plates whose top-level is forbidden but whose UnitFrame is
+    -- not — the shape retail Midnight 12.x uses for anonymised
+    -- arena enemy plates.  Only truly uf-forbidden plates (rare)
+    -- are skipped, which is the correct taint-safe behaviour.
+    if _IsForbidden(plate, uf) then return nil end
+    -- Direct uf:CreateTexture — same call sequence _GetTarget and
+    -- _GetClassIcon use in this file, same one BBP uses for its
+    -- healer cross once you strip the BBP-parity container Frame
+    -- machinery (1.36.19-1.36.21 tried the container path and it
+    -- was overengineered relative to what retail 12.x needs).
+    -- Every setter is pcall-guarded so a plate that refuses a
+    -- specific call fails soft rather than propagating the error.
     local tex = _NewMarker(uf, "greencross")
     if not tex then return nil end
     pcall(tex.SetSize, tex, 14, 14)
