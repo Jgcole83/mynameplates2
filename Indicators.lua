@@ -74,6 +74,48 @@ end
 ns.IsInArena = _IsInArena
 
 ----------------------------------------------------------------------
+-- 1.36.36: UnitIsProbablyUnit — name-based unit match.
+--
+-- Credit: adopted from BetterBlizzPlates (midnight/modules/arenaid.lua
+-- ~line 100), whose author explicitly requested attribution in a
+-- source comment.  Their pattern is the canonical retail-12.x way to
+-- bind an anonymised nameplate token to an arena/party slot.
+--
+-- Why we need it:
+--   In retail Midnight (12.x), Blizzard's anti-scripting layer makes
+--   UnitIsUnit(nameplateToken, "arenaN") return FALSE at gate open —
+--   even when the underlying physical unit is the same player.  The
+--   token remains "anonymised" until the client learns the identity
+--   through interaction (target / mouseover / focus).  This starves
+--   every downstream binding (_LinkVisiblePlatesToArena,
+--   AM:RescanDirect, AM:LearnFromIntermediary), which is why classes
+--   and healer crosses only appeared after a mouseover before this
+--   fix.
+--
+-- Why UnitName works when UnitIsUnit does not:
+--   UnitName is exempt from the anti-scripting redaction because it's
+--   used ubiquitously for combat-log display, nameplate labels, and
+--   tooltip text.  Both nameplateN and arenaN tokens return the real
+--   player name for the same physical unit at gate open — so a name
+--   comparison reliably binds plate -> arena slot with zero user
+--   interaction required.
+--
+-- Safety:
+--   Read-only Unit API calls (UnitExists + UnitName), no state
+--   mutation, no forbidden-frame contact, no taint surface.  Safe to
+--   call from any context.
+----------------------------------------------------------------------
+local function _UnitIsProbablyUnit(unit1, unit2)
+    if not unit1 or not unit2 then return false end
+    if not UnitExists(unit1) or not UnitExists(unit2) then return false end
+    local name1 = UnitName(unit1)
+    local name2 = UnitName(unit2)
+    if not name1 or not name2 then return false end
+    return name1 == name2
+end
+ns.UnitIsProbablyUnit = _UnitIsProbablyUnit
+
+----------------------------------------------------------------------
 -- 1.36.15: ARENA PREP CACHE (sArena-parity)
 --
 -- Blizzard fires `ARENA_PREP_OPPONENT_SPECIALIZATIONS` during the
@@ -213,11 +255,15 @@ end
 
 -- Attempt to link every currently-visible plate to its arena slot.
 -- Called whenever prep data lands or arena rosters change.  Iterates
--- all plates and asks Blizzard "which arena unit are you?" via three
+-- all plates and asks Blizzard "which arena unit are you?" via
 -- signals in order of confidence:
---   1. UnitIsUnit(uf.unit, "arenaN") — same test AM:RescanDirect uses.
---   2. C_NamePlate.GetNamePlateForUnit("arenaN") returned this plate.
---   3. Per-plate class cache uniquely matches ARENA_PREP[i].classFile.
+--   1. UnitIsUnit(uf.unit, "arenaN") — authoritative when it works.
+--   2. UnitIsProbablyUnit(uf.unit, "arenaN") — 1.36.36 BBP-style
+--      name match; the ONLY signal that works at gate open on retail
+--      12.x anonymised plates, because UnitIsUnit is redacted by the
+--      anti-scripting layer until first interaction.  Root fix for
+--      the "have to mouseover for classes/healer cross" symptom.
+--   3. C_NamePlate.GetNamePlateForUnit("arenaN") returned this plate.
 -- On any hit, LinkPlateToArena cements the binding and seeds caches.
 local function _LinkVisiblePlatesToArena()
     if not _IsInArena() then return end
@@ -231,6 +277,15 @@ local function _LinkVisiblePlatesToArena()
                 local matched
                 if unit and UnitIsUnit then
                     local ok, r = pcall(UnitIsUnit, unit, "arena" .. i)
+                    if ok and r then matched = true end
+                end
+                if (not matched) and unit then
+                    -- 1.36.36: BBP-style name match.  This is the
+                    -- key signal at gate open — UnitIsUnit returns
+                    -- false for anonymised nameplate tokens even
+                    -- against arena1..3 targets, but UnitName still
+                    -- returns real names on both sides.
+                    local ok, r = pcall(_UnitIsProbablyUnit, unit, "arena" .. i)
                     if ok and r then matched = true end
                 end
                 if (not matched) and C_NamePlate.GetNamePlateForUnit then
@@ -444,6 +499,12 @@ end
 ----------------------------------------------------------------------
 -- Direct match — UnitIsUnit(uf.unit, "arenaN").  Works on plates
 -- whose tokens aren't fully anonymized.
+--
+-- 1.36.36: added UnitIsProbablyUnit (name-based) fallback for retail
+-- 12.x anonymised gate-open plates where UnitIsUnit returns false.
+-- Same guarantee level as UnitIsUnit for our purposes: both plate and
+-- arenaN return real names from UnitName, and player-name collisions
+-- across three opposing arena slots aren't a real concern.
 ----------------------------------------------------------------------
 function AM:RescanDirect()
     if not _IsInArena() then return end
@@ -454,14 +515,27 @@ function AM:RescanDirect()
             local unit = uf and (uf.unit or uf.displayedUnit)
             if unit then
                 for i = 1, 3 do
+                    local matched
                     local ok, isUnit = pcall(UnitIsUnit, unit, "arena" .. i)
-                    if ok and isUnit then
+                    if ok and isUnit then matched = true end
+                    if not matched then
+                        -- 1.36.36: BBP-style name match rescues
+                        -- anonymised gate-open plates that UnitIsUnit
+                        -- refuses to compare.  Uses pcall for the
+                        -- same defensive reason as the UnitIsUnit
+                        -- call above (unknown API surface on some
+                        -- token combinations).
+                        local ok2, r = pcall(_UnitIsProbablyUnit, unit, "arena" .. i)
+                        if ok2 and r then matched = true end
+                    end
+                    if matched then
                         self:Tag(plate, i)
                         -- 1.36.16: escalate to definitive linkage.
-                        -- UnitIsUnit is Blizzard's authoritative
-                        -- token comparison — if it says the plate
-                        -- IS arenaN, we know it with 100% certainty
-                        -- (unlike fingerprint match, which guesses).
+                        -- UnitIsUnit / UnitIsProbablyUnit are both
+                        -- authoritative for this purpose — if either
+                        -- says the plate IS arenaN, we know it with
+                        -- high certainty (unlike fingerprint match,
+                        -- which guesses from race/sex/power).
                         -- LinkPlateToArena will also seed the per-
                         -- plate spec + class caches from ARENA_PREP,
                         -- so the plate renders correct data on the
@@ -543,10 +617,17 @@ function AM:LearnFromIntermediary(intermediary)
     if not _IsInArena() then return end
     if not UnitExists(intermediary) then return end
 
+    -- Identify which arena slot the intermediary IS.  UnitIsUnit is
+    -- authoritative when it works; the 1.36.36 name-match fallback
+    -- covers the rare case where the intermediary is one of the
+    -- redacted tokens (e.g. `mouseover` referencing an anonymised
+    -- arena plate) that UnitIsUnit still refuses to compare.
     local matchedArena
     for i = 1, 3 do
         local ok, isUnit = pcall(UnitIsUnit, intermediary, "arena" .. i)
         if ok and isUnit then matchedArena = i; break end
+        local ok2, r = pcall(_UnitIsProbablyUnit, intermediary, "arena" .. i)
+        if ok2 and r then matchedArena = i; break end
     end
     if not matchedArena then return end
 
@@ -558,6 +639,11 @@ function AM:LearnFromIntermediary(intermediary)
             if unit then
                 local ok, same = pcall(UnitIsUnit, unit, intermediary)
                 if ok and same then plate = p; break end
+                -- 1.36.36: same name-based fallback for the reverse
+                -- lookup — find the plate whose unit shares a name
+                -- with the intermediary when UnitIsUnit refuses.
+                local ok2, r = pcall(_UnitIsProbablyUnit, unit, intermediary)
+                if ok2 and r then plate = p; break end
             end
         end
     end
