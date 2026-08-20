@@ -1005,6 +1005,22 @@ _ApplyTotemIcon = function(plate, unit, isFriend)
         end
     end
 
+    -- 1.36.29: per-NPC-ID icon gate.  Users can flip off a specific
+    -- important totem's icon (e.g. hide Grounding icons, keep
+    -- Capacitor icons) from the "Important Totems" grid on the
+    -- Summon Icons & Names UI tab.  Only fires when we can resolve
+    -- the plate's npcID -- anonymised arena tokens (secret unit,
+    -- no capture yet) fall through to normal type-level rendering.
+    -- Missing / true keys count as ON; only an explicit `false`
+    -- value suppresses this totem's icon.
+    if not testing then
+        local npcID = _ResolvePlateNpcID(plate, unit)
+        if npcID and cfg.iconByNpcID
+           and cfg.iconByNpcID[npcID] == false then
+            return _FullClearTotemState(plate)
+        end
+    end
+
     -- Friend / enemy gate.  Reuse the resolved isFriend from caller —
     -- caller already handled secret-unit safety when deriving it.
     if isFriend == nil then
@@ -2816,6 +2832,78 @@ end
 -- draw for an anonymized-arena summon of that type.
 function ns:GetIconForSummonType(summonType)
     return ICON_BY_TYPE[summonType or "totem"] or TOTEM_ICON_GENERIC
+end
+
+-- 1.36.29: per-NPC-ID icon toggle accessors.  Backing store is
+-- MyNamePlatesDB.labels.petTotemName.iconByNpcID (a table of
+-- [npcID] = false for muted totems; missing keys default ON so the
+-- table stays compact even for users with hundreds of important
+-- totems on).  The gate lives in _ApplyTotemIcon (Labels.lua ~line
+-- 1010) and only fires when the plate's npcID resolves -- which is
+-- true for named totems and any anonymised summon that our capture
+-- pipeline (target / mouseover / group scan) has seen.
+function ns:GetLabelIconForNpc(key, npcID)
+    if not (MyNamePlatesDB and MyNamePlatesDB.labels and npcID) then return true end
+    local sub = MyNamePlatesDB.labels[key]
+    if not (sub and sub.iconByNpcID) then return true end
+    local v = sub.iconByNpcID[npcID]
+    if v == nil then return true end
+    return v and true or false
+end
+
+function ns:SetLabelIconForNpc(key, npcID, on)
+    if not (MyNamePlatesDB and MyNamePlatesDB.labels and npcID) then return end
+    local sub = MyNamePlatesDB.labels[key]
+    if not sub then return end
+    sub.iconByNpcID = sub.iconByNpcID or {}
+    -- Store nil (default) for ON so the DB stays compact; only false
+    -- for muted totems.  Users toggling back on won't leave stale
+    -- true entries lingering across sessions.
+    if on then
+        sub.iconByNpcID[npcID] = nil
+    else
+        sub.iconByNpcID[npcID] = false
+    end
+    if ns.RefreshAllLabels then ns:RefreshAllLabels() end
+end
+
+-- 1.36.29: enumerate every important totem from NPC_DATA for the UI.
+-- Dedupes by spellID so users don't see "Capacitor Totem" listed
+-- twice (npcID 61245 + 192058 both point at spellID 192058); we keep
+-- the first-encountered record and its npcID as the toggle key.  All
+-- npcIDs that share the same spellID are collected in `aliasNpcIDs`
+-- so the UI callback can flip every one of them together (otherwise
+-- toggling "off" for Capacitor would only mute one of its two NPC
+-- IDs).  Sorted alphabetically by display name.
+function ns:GetImportantTotems()
+    if not ns.NPC_DATA then return {} end
+    local bySpell = {}
+    for npcID, rec in pairs(ns.NPC_DATA) do
+        if rec and rec.type == "totem" and rec.important and rec.spellID then
+            local existing = bySpell[rec.spellID]
+            if not existing then
+                bySpell[rec.spellID] = {
+                    npcID       = npcID,
+                    name        = rec.name,
+                    spellID     = rec.spellID,
+                    aliasNpcIDs = { npcID },
+                }
+            else
+                existing.aliasNpcIDs[#existing.aliasNpcIDs + 1] = npcID
+                -- Prefer the shorter / cleaner name (drops "(PvP alt)"
+                -- and "(alt)" duplicates so Capacitor reads as
+                -- "Capacitor Totem" not "Capacitor Totem (PvP alt)").
+                if rec.name and #rec.name < #existing.name then
+                    existing.name  = rec.name
+                    existing.npcID = npcID
+                end
+            end
+        end
+    end
+    local list = {}
+    for _, entry in pairs(bySpell) do list[#list + 1] = entry end
+    table.sort(list, function(a, b) return (a.name or "") < (b.name or "") end)
+    return list
 end
 
 ----------------------------------------------------------------------

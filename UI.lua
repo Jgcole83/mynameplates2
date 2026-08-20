@@ -1583,10 +1583,104 @@ local function BuildSummonIconsPanel(panel)
         y = y - ROW_H
     end
 
+    -- ---------------------------------------------------------------
+    -- 1.36.29: Important Totems grid.
+    --
+    -- Auto-populated from ns:GetImportantTotems() which pulls every
+    -- record in NPC_DATA where `type == "totem"` AND `important ==
+    -- true` (deduped by spellID so Capacitor's two NPC IDs collapse
+    -- to a single row).  Each row shows the exact icon that will
+    -- render for that totem on a plate (via C_Spell.GetSpellTexture
+    -- on the record's spellID -- same path Step 1 of _ClassifyTotem
+    -- uses) plus a checkbox that writes iconByNpcID[npcID] = false
+    -- to suppress just that one totem's icon overlay.  Every alias
+    -- npcID gets muted together via SetLabelIconForNpc so PvP-alt
+    -- Capacitor doesn't leak through.
+    -- ---------------------------------------------------------------
+    y = y - 6
+    local totemsHeader = MakeLabel(content,
+        "Important Totems (Grounding-class -- glow + magenta highlight):",
+        { 1.0, 0.85, 0.3 })
+    totemsHeader:SetPoint("TOPLEFT", 8, y)
+    y = y - ROW
+
+    local totemsNote = MakeLabel(content,
+        "Each row shows the exact icon this totem renders on its plate.  Toggle off to hide just that one totem's icon (plate stays visible; only the icon overlay is suppressed).  Applies to every NPC-ID variant of the same totem.",
+        { 0.7, 0.7, 0.7 })
+    totemsNote:SetPoint("TOPLEFT", 8, y - 4)
+    totemsNote:SetWidth(540)
+    totemsNote:SetJustifyH("LEFT")
+    y = y - 40
+
+    local totems = (ns.GetImportantTotems and ns:GetImportantTotems()) or {}
+    if #totems == 0 then
+        local empty = MakeLabel(content,
+            "(No important totems found in NPC_DATA -- is NpcData.lua loaded?)",
+            { 0.9, 0.5, 0.5 })
+        empty:SetPoint("TOPLEFT", 8, y)
+        y = y - ROW
+    else
+        -- Two-column grid: icon (24) + name (~170) + checkbox (24)
+        -- per column, columns spaced 280px apart.
+        local COL_X       = { 8, 288 }
+        local ICON_INSET  = 0
+        local NAME_INSET  = 30
+        local CB_INSET    = 200
+        local TOTEM_ROW_H = 30
+
+        local startY = y
+        for i, t in ipairs(totems) do
+            local col   = ((i - 1) % 2) + 1
+            local rowIx = math.floor((i - 1) / 2)
+            local rowY  = startY - (rowIx * TOTEM_ROW_H)
+            local baseX = COL_X[col]
+
+            -- Icon preview via spellID.
+            local iconFrame = CreateFrame("Frame", nil, content)
+            iconFrame:SetSize(24, 24)
+            iconFrame:SetPoint("TOPLEFT", baseX + ICON_INSET, rowY - 2)
+            local tex = iconFrame:CreateTexture(nil, "ARTWORK")
+            tex:SetAllPoints(iconFrame)
+            tex:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+            local iconTex
+            if C_Spell and C_Spell.GetSpellTexture and t.spellID then
+                local okI, tt = pcall(C_Spell.GetSpellTexture, t.spellID)
+                if okI and tt then iconTex = tt end
+            end
+            tex:SetTexture(iconTex or "Interface\\Icons\\INV_Misc_QuestionMark")
+
+            -- Name label.  Word-wrap off + fixed width so long names
+            -- don't collide with the checkbox column.
+            local nameFS = MakeLabel(content, t.name or "?")
+            nameFS:SetPoint("TOPLEFT", baseX + NAME_INSET, rowY)
+            nameFS:SetWidth(165)
+            nameFS:SetJustifyH("LEFT")
+            nameFS:SetWordWrap(false)
+
+            -- Icon toggle.  Fires for every alias npcID so PvP-alt
+            -- Capacitor / (alt) variants stay in sync with the row's
+            -- canonical npcID.
+            local aliases = t.aliasNpcIDs or { t.npcID }
+            local iconCB  = MakeCheckbox(content, "",
+                function()
+                    return ns:GetLabelIconForNpc("petTotemName", t.npcID)
+                end,
+                function(on)
+                    for _, aid in ipairs(aliases) do
+                        ns:SetLabelIconForNpc("petTotemName", aid, on)
+                    end
+                end,
+                (t.name or "?") .. " icon: on = render this totem's spellbook icon on its plate; off = suppress just this totem's icon (plate is still visible).")
+            iconCB:SetPoint("TOPLEFT", baseX + CB_INSET, rowY + 2)
+        end
+        local rows = math.ceil(#totems / 2)
+        y = startY - (rows * TOTEM_ROW_H) - 4
+    end
+
     -- Footer note explaining what's not on this tab.
     y = y - 4
     local footer = MakeLabel(content,
-        "Icon size, position, alpha, and colour live on the Labels > Pet & Totem Name block.  This tab controls WHICH types render an icon/name -- not HOW they render.",
+        "Icon size, position, alpha, and colour live on the Labels > Pet & Totem Name block.  This tab controls WHICH types + individual totems render an icon/name -- not HOW they render.",
         { 0.65, 0.65, 0.65 })
     footer:SetPoint("TOPLEFT", 8, y)
     footer:SetWidth(540)

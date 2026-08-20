@@ -167,6 +167,19 @@ local function BuildDefaults()
                     minion      = true,
                     minor       = true,
                 },
+                -- 1.36.29: per-NPC-ID icon toggle for individual totems.
+                -- Empty by default (all totem icons on).  Users can flip
+                -- a specific important totem's icon off from the "Summon
+                -- Icons & Names" UI tab -- writes `false` at that npcID
+                -- key; missing / true keys count as ON.  Applies only
+                -- when we can resolve the plate's npcID; anonymised
+                -- arena plates fall through to type-level rendering.
+                --
+                -- Kept separate from `iconTypes` because the type gate
+                -- is coarse (all totems on/off) while this is granular
+                -- (Grounding on, Capacitor off, etc.).  Semantics: BOTH
+                -- gates must pass for the icon to render.
+                iconByNpcID = {},
 
                 -- ---------------------------------------------------------
                 -- 1.35.0: full BBP-style totem indicator parity.
