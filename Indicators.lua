@@ -985,70 +985,56 @@ end
 
 -- Returns the english classFile ("WARRIOR", "MAGE", etc.).
 --
--- 1.36.33: reordered to match the v1.24.0 / v1.34.2 working
--- reference (`C:\Users\Jgcol\OneDrive\Desktop\MyNamePlates`, and
--- our own git tag before the arena-cross debugging chain).
--- The two v1.24.0 paths (direct UnitClass on the plate token,
--- then UnitClass on the ArenaMap canonical arenaN token) are the
--- PRIMARY resolvers.  The per-plate class cache and the
--- ARENA_PREP-via-linkage lookup are ADDITIVE fallbacks that only
--- fire when both v1.24.0 paths returned nothing usable.
+-- 1.36.35: primary paths are byte-for-byte the v1.24.0 working
+-- reference (Desktop\MyNamePlates\Indicators.lua line 702-713):
+-- direct UnitClass on the plate token, then UnitClass on the
+-- ArenaMap canonical arenaN token, then nil.  No issecretvalue
+-- guards, no reordering — literally the old code.
 --
--- Why the reorder matters: the additive caches are reliable
--- WHEN POPULATED, but at gate open they're usually empty (no
--- target/mouseover captures yet, and _plateByArena is set only
--- from definitive UnitIsUnit hits — which don't fire for fully
--- anonymised arena tokens).  Under the previous order, an empty
--- additive path would fall through to UnitClass(arenaUnit), but
--- when it WASN'T empty (rare early captures) it could contaminate
--- results if ArenaMap had mis-linked the plate in the interim.
--- Under the v1.24.0 order, direct token data always wins over
--- inference — matching the pattern the user confirmed works.
+-- The additive fallbacks (per-plate class cache from Labels.lua
+-- capture, and ARENA_PREP.classFile via definitive _arenaByPlate
+-- linkage) run STRICTLY after both v1.24.0 paths return nil, so
+-- they behave as pure fallback: they never preempt v1.24.0's
+-- return contract.
 --
--- Every path strips secret-string returns (UnitClass on
--- anonymised units in retail Midnight 12.x returns secret
--- values even when the unit token itself is non-secret) —
--- callers do string.lower() on this value, which taints if the
--- input is secret.
+-- Prior versions (1.36.33/34) had issecretvalue guards on the
+-- primary paths to defend _ApplyClassTex's string.lower call
+-- against tainted input.  That defense re-routed some retail
+-- 12.x anonymised-plate cases through the additive fallbacks,
+-- and if _arenaByPlate had any wrong-seeded binding the fallback
+-- rendered the wrong slot's class icon at gate open ("sometimes
+-- wrong class" symptom).  v1.24.0's behaviour on a secret
+-- classFile is that _ApplyClassTex fails cleanly with no icon
+-- — a better outcome than a wrong icon.
 local function _GetClassFile(plate, unit)
-    -- v1.24.0 PRIMARY #1: direct UnitClass on the plate's own token.
-    -- Non-secret returns are authoritative.
+    -- v1.24.0 PRIMARY #1 -- byte-identical to reference line 703-706.
     if unit then
         local _, classFile = UnitClass(unit)
-        if classFile and not (issecretvalue and issecretvalue(classFile)) then
-            return classFile
-        end
+        if classFile then return classFile end
     end
-    -- v1.24.0 PRIMARY #2: UnitClass on the ArenaMap canonical
-    -- arenaN token.  Works when the per-plate token is anonymised
-    -- but ArenaMap has bound the plate to a slot (direct
-    -- UnitIsUnit or fingerprint).  arenaN tokens themselves are
-    -- never secret, and UnitClass on them returns the real class
-    -- file for the linked slot.
+    -- v1.24.0 PRIMARY #2 -- byte-identical to reference line 707-711.
     local arenaUnit = plate and ns:GetArenaUnitForPlate(plate)
     if arenaUnit then
         local _, cf = UnitClass(arenaUnit)
-        if cf and not (issecretvalue and issecretvalue(cf)) then
-            return cf
-        end
+        if cf then return cf end
     end
     -- 1.36.13 ADDITIVE FALLBACK: per-plate class cache populated
     -- by Labels.lua's _CaptureSpecFromToken on target/mouseover.
-    -- Only reached when both v1.24.0 paths returned nothing (fully
-    -- anonymised plate with no ArenaMap binding).  Cache values
-    -- are always correct because they come from non-secret
-    -- target/mouseover tokens; the risk was letting them PREEMPT
-    -- direct UnitClass data, which is what 1.36.33 fixes by
-    -- moving them below the primary paths.
+    -- Reached only when v1.24.0 paths both returned nil (unit is
+    -- nil AND no ArenaMap binding).  Values are always correct
+    -- when set — they come from non-secret target/mouseover
+    -- tokens.
     if plate and ns.GetClassByPlate then
         local cached = ns:GetClassByPlate(plate)
         if cached then return cached end
     end
     -- 1.36.15 ADDITIVE FALLBACK: definitive arena linkage ->
-    -- ARENA_PREP classFile.  Set only from definitive UnitIsUnit
-    -- hits (target/focus/mouseover matching arena1..3), so
-    -- guaranteed correct when populated.  Fills the gap when
-    -- everything above returned nil.
+    -- ARENA_PREP classFile.  _arenaByPlate is set only from
+    -- definitive UnitIsUnit hits (target / focus / mouseover
+    -- matching arena1..3, plus C_NamePlate.GetNamePlateForUnit
+    -- ("arenaN") returning this plate), so guaranteed correct
+    -- when populated.  Fills the gap when everything above
+    -- returned nil.
     if plate and ns.GetArenaByPlate then
         local idx = ns:GetArenaByPlate(plate)
         local prep = idx and ns.ARENA_PREP and ns.ARENA_PREP[idx]
