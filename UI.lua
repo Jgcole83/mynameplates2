@@ -1464,6 +1464,138 @@ local function BuildLabelBlock(parent, startY, key, headingLabel, defaultY)
     return y - 8
 end
 
+----------------------------------------------------------------------
+-- 1.36.28: "Summon Icons & Names" panel
+--
+-- One row per summonType with:
+--   * 24x24 preview of the fallback icon that will render for that type
+--     (uses the exact texture ICON_BY_TYPE returns in Labels.lua so the
+--     preview matches what plates draw in anonymised arena).
+--   * "Show icon" checkbox -> writes labels.petTotemName.iconTypes[st].
+--     Controls the icon overlay only.
+--   * "Show name" checkbox -> writes labels.petTotemName.types[st].
+--     Controls the text overlay only.  Same underlying value as the
+--     older per-type checkbox grid on the Labels tab; both surfaces
+--     stay in sync via the standard refresh hooks.
+--
+-- Also renders a short blurb per row so the user knows which pets fall
+-- into each bucket (Warlock Pets = Imp/Observer/Felguard/...; Minion =
+-- Wild Imp/Dreadstalker/...; etc.), which was previously buried in
+-- tooltips on the Labels tab.
+----------------------------------------------------------------------
+local SUMMON_ICON_ROWS = {
+    { st = "totem",       label = "Totems",
+      blurb = "Capacitor, Healing Tide, Tremor, Earthbind, Grounding, Statue of the Ox, etc." },
+    { st = "psyfiend",    label = "Psyfiend",
+      blurb = "Priest's fear-spamming totem-like summon (Psychic Horror channel)." },
+    { st = "pet_warlock", label = "Warlock Pets",
+      blurb = "Primary demons: Imp, Felhunter, Voidwalker, Succubus, Felguard, Observer, Voidlord." },
+    { st = "pet_hunter",  label = "Hunter Pets",
+      blurb = "Every hunter pet family/skin (Cat, Bear, Spirit Beast, Dire Beast, etc.)." },
+    { st = "pet_dk",      label = "Death Knight Pets",
+      blurb = "Unholy DK Risen Ghoul, Abomination, Army of the Dead ghouls." },
+    { st = "pet_mage",    label = "Mage Pets",
+      blurb = "Frost Mage Water Elemental, Arcane Mage Mirror Images." },
+    { st = "guardian",    label = "Guardians",
+      blurb = "Larger cooldown summons: Earth Elemental, Infernal, Demonic Tyrant, Fel Lord." },
+    { st = "minion",      label = "Minions",
+      blurb = "Warlock Wild Imp, Dreadstalker, Vilefiend; Druid Force of Nature treants." },
+    { st = "minor",       label = "Minor (Minus)",
+      blurb = "Tiny low-HP summons (Bloodworms, imp variants marked as `minus` by Blizzard)." },
+}
+
+local function BuildSummonIconsPanel(panel)
+    AddHeader(panel, "Summon Icons & Names",
+        "Turn the icon overlay and text label on/off per summon type.  Handy in arena where Blizzard hides pet/totem names -- the icon renders instead.  Editing 'Show name' here also updates the per-type checkboxes on the Labels tab.")
+
+    local scroll = CreateFrame("ScrollFrame", nil, panel, "UIPanelScrollFrameTemplate")
+    scroll:SetPoint("TOPLEFT",     PAD,    -PAD * 4)
+    scroll:SetPoint("BOTTOMRIGHT", -PAD * 2, PAD)
+    local content = CreateFrame("Frame", nil, scroll)
+    content:SetSize(560, 1)
+    scroll:SetScrollChild(content)
+
+    -- Column layout (all offsets relative to `content`, y grows negative
+    -- downward like the rest of the panels in this file):
+    --   x = 8   -> icon preview (24x24)
+    --   x = 44  -> type label + blurb (~200 wide)
+    --   x = 260 -> Show icon checkbox
+    --   x = 400 -> Show name checkbox
+    local ICON_X, LABEL_X = 8, 44
+    local ICON_CB_X, NAME_CB_X = 260, 400
+    local ROW_H = 44   -- one line for label, one for blurb
+
+    -- Column headers.
+    local y = -8
+    local hIcon = MakeLabel(content, "Icon", { 1.0, 0.85, 0.3 })
+    hIcon:SetPoint("TOPLEFT", ICON_X, y)
+    local hType = MakeLabel(content, "Summon Type", { 1.0, 0.85, 0.3 })
+    hType:SetPoint("TOPLEFT", LABEL_X, y)
+    local hIconCB = MakeLabel(content, "Show icon", { 1.0, 0.85, 0.3 })
+    hIconCB:SetPoint("TOPLEFT", ICON_CB_X, y)
+    local hNameCB = MakeLabel(content, "Show name", { 1.0, 0.85, 0.3 })
+    hNameCB:SetPoint("TOPLEFT", NAME_CB_X, y)
+    y = y - ROW - 6
+
+    for _, row in ipairs(SUMMON_ICON_ROWS) do
+        local st = row.st
+
+        -- Icon preview.  Use a bare texture (not a Button) so it doesn't
+        -- swallow clicks or steal keyboard focus.  Border matches the
+        -- style of AuraIcon-Border used elsewhere in the panel.
+        local iconFrame = CreateFrame("Frame", nil, content)
+        iconFrame:SetSize(24, 24)
+        iconFrame:SetPoint("TOPLEFT", ICON_X, y - 2)
+        local tex = iconFrame:CreateTexture(nil, "ARTWORK")
+        tex:SetAllPoints(iconFrame)
+        -- Trim the built-in Blizzard 8% border from the spell texture
+        -- so the icon fills the preview cleanly (same trim BBP uses).
+        tex:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+        local iconPath = (ns.GetIconForSummonType and ns:GetIconForSummonType(st))
+                         or "Interface\\Icons\\INV_Misc_QuestionMark"
+        tex:SetTexture(iconPath)
+
+        -- Type label.
+        local nameFS = MakeLabel(content, row.label)
+        nameFS:SetPoint("TOPLEFT", LABEL_X, y)
+
+        -- Blurb (one line below the label, dim grey).
+        local blurbFS = MakeLabel(content, row.blurb, { 0.7, 0.7, 0.7 })
+        blurbFS:SetPoint("TOPLEFT", LABEL_X, y - 14)
+        blurbFS:SetWidth(210)
+        blurbFS:SetJustifyH("LEFT")
+        blurbFS:SetWordWrap(false)
+
+        -- Show-icon checkbox.
+        local iconCB = MakeCheckbox(content, "",
+            function() return ns:GetLabelIconType("petTotemName", st) end,
+            function(on) ns:SetLabelIconType("petTotemName", st, on) end,
+            "Toggle the fallback icon overlay for this summon type.  Preview on the left shows exactly which texture will render when the pipeline falls back to type-based icons (anonymised arena plates).")
+        iconCB:SetPoint("TOPLEFT", ICON_CB_X, y + 2)
+
+        -- Show-name checkbox.
+        local nameCB = MakeCheckbox(content, "",
+            function() return ns:GetLabelType("petTotemName", st) end,
+            function(on) ns:SetLabelType("petTotemName", st, on) end,
+            "Toggle the custom text label for this summon type.  Same underlying setting as the per-type checkbox on the Labels tab -- editing here updates both places.")
+        nameCB:SetPoint("TOPLEFT", NAME_CB_X, y + 2)
+
+        y = y - ROW_H
+    end
+
+    -- Footer note explaining what's not on this tab.
+    y = y - 4
+    local footer = MakeLabel(content,
+        "Icon size, position, alpha, and colour live on the Labels > Pet & Totem Name block.  This tab controls WHICH types render an icon/name -- not HOW they render.",
+        { 0.65, 0.65, 0.65 })
+    footer:SetPoint("TOPLEFT", 8, y)
+    footer:SetWidth(540)
+    footer:SetJustifyH("LEFT")
+    y = y - 40
+
+    content:SetSize(560, -y + PAD)
+end
+
 local function BuildLabelsPanel(panel)
     AddHeader(panel, "Labels",
         "Three blocks: Name controls player & regular NPC nameplates; Pet & Totem Name is a separate config for summons (when enabled); Spec adds a custom spec text on player plates.  Positive X = right, positive Y = up.")
@@ -1530,6 +1662,19 @@ local function Register()
     labelsPanel.name = "Labels"
     BuildLabelsPanel(labelsPanel)
     Settings.RegisterCanvasLayoutSubcategory(rootCategory, labelsPanel, "Labels")
+
+    -- 1.36.28: dedicated Summon Icons & Names subcategory.
+    -- Consolidates the per-summon-type icon/name toggles so users can
+    -- see WHICH icon each type will render (live 24x24 preview) and
+    -- toggle icon vs name independently.  Existing per-type name
+    -- checkboxes on the Labels tab remain; both surfaces share the
+    -- same underlying MyNamePlatesDB.labels.petTotemName.{types,iconTypes}
+    -- fields via ns:Get/SetLabel[Icon]Type, so edits stay in sync.
+    local summonIconsPanel = CreateFrame("Frame")
+    summonIconsPanel.name = "Summon Icons & Names"
+    BuildSummonIconsPanel(summonIconsPanel)
+    Settings.RegisterCanvasLayoutSubcategory(rootCategory, summonIconsPanel,
+        "Summon Icons & Names")
 end
 
 ----------------------------------------------------------------------

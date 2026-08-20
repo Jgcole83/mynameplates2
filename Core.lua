@@ -142,6 +142,31 @@ local function BuildDefaults()
                     minion      = false,
                     minor       = false,
                 },
+                -- 1.36.28: split ICON gate from NAME gate.  Prior to this
+                -- version, `types` above governed BOTH the text overlay AND
+                -- the icon overlay — flipping "Warlock Pets" off silenced
+                -- Observer's NAME *and* hid its icon.  Users asked for a
+                -- dedicated "Summon Icons & Names" tab where the two can
+                -- be controlled independently (see UI.lua).
+                --
+                -- New behavior: `types` still gates the text label (existing
+                -- semantics preserved); `iconTypes` gates the icon overlay.
+                -- Fresh installs default to ALL true here so users see every
+                -- fallback icon out of the box and can toggle off what they
+                -- don't want.  A one-shot migration below (_iconTypesMigrated)
+                -- copies existing users' `types` values into `iconTypes` so
+                -- pre-1.36.28 saves get identical behavior on first login.
+                iconTypes = {
+                    totem       = true,
+                    psyfiend    = true,
+                    guardian    = true,
+                    pet_hunter  = true,
+                    pet_warlock = true,
+                    pet_dk      = true,
+                    pet_mage    = true,
+                    minion      = true,
+                    minor       = true,
+                },
 
                 -- ---------------------------------------------------------
                 -- 1.35.0: full BBP-style totem indicator parity.
@@ -797,6 +822,35 @@ f:SetScript("OnEvent", function(_, event, arg1)
                 end
             end
             MyNamePlatesDB._enemyNpcSplitMigrated = true
+        end
+
+        -- 1.36.28 one-shot migration: split icon/name gates for the
+        -- pet+totem block.  Prior to this version, `types` governed both
+        -- the text overlay and the icon overlay — so a user who had
+        -- disabled the "Warlock Pets" text (default) silently also
+        -- silenced Warlock Pet icons.  1.36.28 introduces `iconTypes`
+        -- as the new icon gate (Labels.lua) and adds a dedicated
+        -- "Summon Icons & Names" UI tab that lets the user toggle each
+        -- independently.
+        --
+        -- Fresh defaults set iconTypes = all true so new installs see
+        -- every fallback icon.  Existing DBs still have `types` set to
+        -- whatever the user picked (or the pre-1.36.28 defaults where
+        -- only totem+psyfiend were on) — carry those choices over so
+        -- upgraders' icons don't suddenly light up for pets they'd
+        -- muted.  Guarded by a version flag so it runs exactly once.
+        if not MyNamePlatesDB._iconTypesSplitMigrated then
+            local L  = MyNamePlatesDB.labels
+            local pt = L and L.petTotemName
+            if pt and pt.types then
+                pt.iconTypes = pt.iconTypes or {}
+                for k, v in pairs(pt.types) do
+                    if pt.iconTypes[k] == nil then
+                        pt.iconTypes[k] = v
+                    end
+                end
+            end
+            MyNamePlatesDB._iconTypesSplitMigrated = true
         end
     elseif event == "PLAYER_LOGIN" then
         ns:ApplyAll()

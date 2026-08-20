@@ -986,14 +986,23 @@ _ApplyTotemIcon = function(plate, unit, isFriend)
         if not cfg then return _FullClearTotemState(plate) end
     end
 
-    -- Per-summon-type filter — same table used by the name overlay.
+    -- Per-summon-type filter for the ICON overlay.  Since 1.36.28 the
+    -- icon has its own filter table (`iconTypes`) separate from the
+    -- NAME overlay's `types` — see Core.lua defaults and the "Summon
+    -- Icons & Names" UI tab.  On pre-1.36.28 DBs iconTypes has been
+    -- migrated to mirror `types`, so behavior is unchanged for existing
+    -- users; new installs default iconTypes = all true.  Fall back to
+    -- `types` if iconTypes is somehow missing (defensive).
     local st = _TotemIconType(plate, unit)
     if not st then return _FullClearTotemState(plate) end
     -- Skip the per-type filter when testing so target dummies (which
     -- classify as "totem" in test mode via _TotemIconType) render
     -- regardless of whether the user has the totem type checkbox on.
-    if (not testing) and cfg.types and cfg.types[st] == false then
-        return _FullClearTotemState(plate)
+    if not testing then
+        local iconGate = cfg.iconTypes or cfg.types
+        if iconGate and iconGate[st] == false then
+            return _FullClearTotemState(plate)
+        end
     end
 
     -- Friend / enemy gate.  Reuse the resolved isFriend from caller —
@@ -2769,6 +2778,44 @@ function ns:SetLabelType(key, summonType, on)
     sub.types = sub.types or {}
     sub.types[summonType] = on and true or false
     if ns.RefreshAllLabels then ns:RefreshAllLabels() end
+end
+
+-- 1.36.28: mirror of GetLabelType/SetLabelType for the ICON gate.
+-- The icon overlay reads `iconTypes` (Labels.lua line ~995) so users
+-- can turn off the "Warlock Pet" icon without also silencing the
+-- "Observer" text label (or vice-versa).  Missing keys default ON so
+-- newly-added summon types show icons until explicitly muted.
+function ns:GetLabelIconType(key, summonType)
+    if not (MyNamePlatesDB and MyNamePlatesDB.labels) then return nil end
+    local sub = MyNamePlatesDB.labels[key]
+    if not sub then return nil end
+    -- Prefer the new iconTypes table; fall back to `types` for DBs that
+    -- somehow slipped past the 1.36.28 migration (defensive — should
+    -- never happen but keeps this accessor robust).
+    local t = sub.iconTypes or sub.types
+    if not t then return true end
+    local v = t[summonType]
+    if v == nil then return true end
+    return v and true or false
+end
+
+function ns:SetLabelIconType(key, summonType, on)
+    if not (MyNamePlatesDB and MyNamePlatesDB.labels) then return end
+    local sub = MyNamePlatesDB.labels[key]
+    if not sub then return end
+    sub.iconTypes = sub.iconTypes or {}
+    sub.iconTypes[summonType] = on and true or false
+    if ns.RefreshAllLabels then ns:RefreshAllLabels() end
+end
+
+-- 1.36.28: expose the fallback ICON_BY_TYPE texture path so UI.lua can
+-- render a live preview of each summon type's icon in the new "Summon
+-- Icons & Names" tab.  Returns the exact texture used by the icon
+-- pipeline when it falls back to type-based rendering (Step 4 in
+-- _ClassifyTotem), so the preview matches what the plate will actually
+-- draw for an anonymized-arena summon of that type.
+function ns:GetIconForSummonType(summonType)
+    return ICON_BY_TYPE[summonType or "totem"] or TOTEM_ICON_GENERIC
 end
 
 ----------------------------------------------------------------------
