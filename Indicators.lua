@@ -602,6 +602,31 @@ function AM:RescanFingerprint()
                 local idx = _resolveIndex(p.props, candidatePool)
                 if idx and not self.indexToPlate[idx] then
                     self:Tag(p.plate, idx)
+                    -- 1.36.44: also populate the definitive
+                    -- `_plateByArena[i]` binding used by ADDITIVE #2 in
+                    -- RefreshHealerCrosses and Labels.lua's spec text
+                    -- renderer.  Before this, only RescanDirect
+                    -- (UnitIsUnit / UnitIsProbablyUnit success paths)
+                    -- and LearnFromIntermediary (target / focus /
+                    -- mouseover) called LinkPlateToArena.  So on
+                    -- retail 12.x anonymised plates where both
+                    -- UnitIsUnit and UnitIsProbablyUnit fail against
+                    -- arenaN, `_plateByArena` stayed empty and
+                    -- ADDITIVE #2 never stamped the enemy healer
+                    -- cross even though we KNEW which arena slot
+                    -- this plate is via fingerprint.
+                    --
+                    -- Fingerprint match against race/sex/power/class
+                    -- (all visible on anonymised plates) is trusted
+                    -- enough for LinkPlateToArena — same trust level
+                    -- as UnitIsUnit and UnitIsProbablyUnit already
+                    -- have in RescanDirect.  Ambiguity is filtered by
+                    -- _resolveIndex requiring a unique arena-cache
+                    -- match; if the pool has duplicates for a
+                    -- fingerprint dimension, no match is returned.
+                    if ns.LinkPlateToArena then
+                        pcall(ns.LinkPlateToArena, ns, p.plate, idx)
+                    end
                 end
             end
         end
@@ -1588,6 +1613,19 @@ function ns:RefreshHealerCrosses()
             local plate = C_NamePlate.GetNamePlateForUnit(unit, true)
             if plate then
                 _ApplyHealerMarkerOnPlate(plate, true, I.healerFriendly)
+                -- 1.36.44: pin the sticky cache from this authoritative
+                -- stamp path.  IsHealer("party1..4"/player) uses the
+                -- canonical (non-nameplate) unit token, so it's the
+                -- most reliable healer signal for friendly plates.  Once
+                -- we've stamped here, UpdateIndicators's per-frame call
+                -- to _IsHealerForPlate(plate, nameplate_token) will
+                -- short-circuit true on plate.MyNP_IsHealerCache instead
+                -- of re-running IsHealer against the nameplate token
+                -- (which can transiently return false because
+                -- UnitGroupRolesAssigned / tooltip aren't as reliable
+                -- on nameplate tokens as on party tokens).  That flap
+                -- is what caused the friendly cross to flicker.
+                plate.MyNP_IsHealerCache = true
             end
         end
     end
@@ -1648,6 +1686,11 @@ function ns:RefreshHealerCrosses()
                         local cached = ns:GetSpecByPlate(plate)
                         if cached and specOnly[cached] then
                             _ApplyHealerMarkerOnPlate(plate, false, I.healerEnemy)
+                            -- 1.36.44: pin sticky cache so 1.36.43's
+                            -- isFriend override in _HealerEnemyBody
+                            -- keeps the enemy cross visible even when
+                            -- UnitIsFriend returns nil next tick.
+                            plate.MyNP_IsHealerCache = true
                         end
                     end)
                 end
@@ -1691,6 +1734,14 @@ function ns:RefreshHealerCrosses()
                 local plate = ns:GetPlateByArena(i)
                 if plate and not _PlateHasHealerMark(plate) then
                     _ApplyHealerMarkerOnPlate(plate, false, I.healerEnemy)
+                    -- 1.36.44: same sticky-pin rationale as ADDITIVE #1
+                    -- and the friendly walk.  This ARENA_PREP path is
+                    -- the most authoritative signal we have for
+                    -- anonymised arena enemy healers (Blizzard's own
+                    -- GetArenaOpponentSpec + _plateByArena from
+                    -- definitive intermediary linkage), so pinning
+                    -- once it fires is safe.
+                    plate.MyNP_IsHealerCache = true
                 end
             end
         end
@@ -1805,6 +1856,152 @@ local function _ClassifyForbiddenBody()
     else
         _classLoopState.cfg = nil
         _classLoopState.classFile = nil
+    end
+end
+
+----------------------------------------------------------------------
+-- 1.36.44: /mnp cross diagnostic.
+--
+-- Dumps, for each visible plate + each arena slot, the exact state of
+-- every input the healer-cross decision depends on: unit token,
+-- name/GUID/secret status, isFriend/isPlayer, forbidden status,
+-- UnitIsUnit/UnitIsProbablyUnit results against arena1..3, AM binding
+-- state (plateToIndex + _plateByArena), IsHealer decomposition
+-- (role/spec/tooltip individually), _IsHealerForPlate result, sticky
+-- cache flag, and current marker visibility.  Plus arena state:
+-- IsInArena, GetArenaOpponentSpec(1..3), and ARENA_PREP cache
+-- contents.
+--
+-- Purpose: when the enemy cross isn't stamping and we can't tell
+-- from static analysis which detection path is failing, run this in
+-- an arena and it prints the exact API surface at that moment.
+-- Every gate in _HealerEnemyBody / _IsHealerForPlate / ADDITIVE #1
+-- / ADDITIVE #2 can then be evaluated directly against the numbers.
+----------------------------------------------------------------------
+function ns:DumpHealerCross()
+    local function b(v)
+        if v == nil then return "nil" end
+        if v == false then return "false" end
+        if v == true then return "true" end
+        return tostring(v)
+    end
+    local function trim(s, n)
+        s = tostring(s or "")
+        n = n or 20
+        if #s > n then return s:sub(1, n - 1) .. "…" end
+        return s
+    end
+
+    print("|cff00c0ffMyNamePlates|r /mnp cross diagnostic:")
+
+    -- Arena state
+    local inArena = _IsInArena()
+    print(("  IsInArena           = %s"):format(b(inArena)))
+    print(("  IsActiveBattlefieldArena = %s"):format(
+        b(IsActiveBattlefieldArena and IsActiveBattlefieldArena() or nil)))
+
+    -- ARENA_PREP snapshot
+    if ns.ARENA_PREP then
+        print("  ARENA_PREP[1..3]:")
+        for i = 1, 3 do
+            local prep = ns.ARENA_PREP[i]
+            if prep then
+                print(("    [%d] spec=%s specID=%s class=%s isHealer=%s"):format(
+                    i, trim(prep.specName, 16), b(prep.specID),
+                    b(prep.classFile), b(prep.isHealer)))
+            else
+                print(("    [%d] <nil>"):format(i))
+            end
+        end
+    end
+
+    -- Arena unit + slot state
+    if GetArenaOpponentSpec then
+        print("  GetArenaOpponentSpec:")
+        for i = 1, 3 do
+            local ok, specID = pcall(GetArenaOpponentSpec, i)
+            local aname = UnitExists("arena" .. i) and UnitName("arena" .. i) or "<absent>"
+            print(("    arena%d exists=%s name=%s spec=%s isHealerSpec=%s"):format(
+                i, b(UnitExists("arena" .. i)), trim(aname, 16),
+                b(ok and specID or nil),
+                b(ok and specID and ns.HEALER_SPECS[specID] or nil)))
+        end
+    end
+
+    -- Plate walk
+    print("  Plates:")
+    if not (C_NamePlate and C_NamePlate.GetNamePlates) then
+        print("    <no C_NamePlate.GetNamePlates>")
+        return
+    end
+    local plates = C_NamePlate.GetNamePlates(true)
+    if #plates == 0 then
+        print("    <no visible plates>")
+        return
+    end
+    for _, plate in ipairs(plates) do
+        local uf = plate.UnitFrame
+        local unit = uf and (uf.unit or uf.displayedUnit)
+        local name = unit and UnitName(unit) or "<no unit>"
+        local guid = unit and UnitGUID(unit) or nil
+        local isForbidden = plate.IsForbidden and plate:IsForbidden() or false
+        local nameSecret = name and issecretvalue and issecretvalue(name) or false
+        local guidSecret = guid and issecretvalue and issecretvalue(guid) or false
+
+        local isFriend, isPlayer
+        if unit then
+            local ok1, f = pcall(UnitIsFriend, "player", unit)
+            if ok1 then isFriend = f end
+            local ok2, p = pcall(UnitIsPlayer, unit)
+            if ok2 then isPlayer = p end
+        end
+
+        -- UnitIsUnit and UnitIsProbablyUnit vs arena1..3
+        local iuHits, pHits = {}, {}
+        for i = 1, 3 do
+            if unit then
+                local ok, r = pcall(UnitIsUnit, unit, "arena" .. i)
+                if ok and r then iuHits[#iuHits + 1] = i end
+                local ok2, r2 = pcall(_UnitIsProbablyUnit, unit, "arena" .. i)
+                if ok2 and r2 then pHits[#pHits + 1] = i end
+            end
+        end
+
+        -- AM binding + definitive _plateByArena binding
+        local amArena, amIdx = ns:GetArenaUnitForPlate(plate)
+        local defIdx
+        for i = 1, 3 do
+            if ns:GetPlateByArena(i) == plate then defIdx = i; break end
+        end
+
+        -- IsHealer decomposition
+        local role, arenaSpec, tooltip
+        if unit then
+            role = UnitGroupRolesAssigned and UnitGroupRolesAssigned(unit) or nil
+            arenaSpec = _IsHealerByArenaSpec(unit)
+            tooltip = _IsHealerByTooltip(unit)
+        end
+        local isH = unit and IsHealer(unit) or false
+        local isHFor = _IsHealerForPlate(plate, unit)
+        local sticky = plate.MyNP_IsHealerCache
+        local markerShown = plate.MyNP_HealerMarker
+            and plate.MyNP_HealerMarker:IsShown() or false
+
+        print(("    %s [%s] forbidden=%s"):format(
+            trim(name, 18), tostring(unit or ""), b(isForbidden)))
+        print(("      guid=%s secret=%s nameSecret=%s"):format(
+            trim(guid or "<nil>", 24), b(guidSecret), b(nameSecret)))
+        print(("      isFriend=%s isPlayer=%s role=%s"):format(
+            b(isFriend), b(isPlayer), tostring(role or "nil")))
+        print(("      UnitIsUnit(arena1..3)=%s  UnitIsProbablyUnit=%s"):format(
+            #iuHits > 0 and table.concat(iuHits, ",") or "-",
+            #pHits > 0 and table.concat(pHits, ",") or "-"))
+        print(("      AM binding: %s (idx=%s)   _plateByArena idx=%s"):format(
+            tostring(amArena or "-"), b(amIdx), b(defIdx)))
+        print(("      IsHealerByArenaSpec=%s IsHealerByTooltip=%s IsHealer=%s"):format(
+            b(arenaSpec), b(tooltip), b(isH)))
+        print(("      _IsHealerForPlate=%s sticky=%s marker.shown=%s"):format(
+            b(isHFor), b(sticky), b(markerShown)))
     end
 end
 

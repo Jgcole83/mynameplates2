@@ -1839,6 +1839,21 @@ SlashCmdList["MYNAMEPLATES"] = function(msg)
         end
     elseif msg == "deepdiag" or msg == "diag" then
         if ns.DeepDiag then ns:DeepDiag() end
+    elseif msg == "cross" or msg == "healer" then
+        -- 1.36.44: per-plate healer-cross detection diagnostic.  Dumps
+        -- every input the healer-cross decision depends on for every
+        -- visible plate (name, GUID, secret status, isFriend/isPlayer,
+        -- UnitIsUnit / UnitIsProbablyUnit vs arena1..3, AM binding
+        -- state, IsHealer decomposition, _IsHealerForPlate result,
+        -- sticky cache flag, marker visibility) plus arena state
+        -- (IsInArena, GetArenaOpponentSpec 1..3, ARENA_PREP cache).
+        -- Use this when the enemy healer cross isn't showing to see
+        -- which specific detection gate is failing.
+        if ns.DumpHealerCross then
+            ns:DumpHealerCross()
+        else
+            print("|cff00c0ffMyNamePlates|r: DumpHealerCross not available.")
+        end
     elseif msg == "labels" then
         -- Per-plate label diagnostic.  For each visible plate dump:
         --   * unit + name + isSummon classification
