@@ -111,6 +111,19 @@ local function _UnitIsProbablyUnit(unit1, unit2)
     local name1 = UnitName(unit1)
     local name2 = UnitName(unit2)
     if not name1 or not name2 then return false end
+    -- 1.36.39: mirror BBP midnight's issecretvalue guard.  Without
+    -- it, two anonymised tokens whose UnitName both return the SAME
+    -- placeholder secret string collide equal — falsely matching a
+    -- friendly plate to an arena opponent slot.  Symptom that
+    -- surfaced this: friendly healer got the RED enemy cross in
+    -- 1.36.38 because AM:RescanDirect / _LinkVisiblePlatesToArena
+    -- tagged the friendly plate with an arena index, then
+    -- _HealerEnemyBody's arenaUnit override forced isFriend=false.
+    -- Verified against BetterBlizzPlates/midnight/modules/arenaid.lua
+    -- line 100.
+    if issecretvalue and (issecretvalue(name1) or issecretvalue(name2)) then
+        return false
+    end
     return name1 == name2
 end
 ns.UnitIsProbablyUnit = _UnitIsProbablyUnit
@@ -959,13 +972,24 @@ local function _IsHealerForPlate(plate, unit)
         if specID and ns.HEALER_SPECS[specID] then return true end
         if arenaUnit and _IsHealerByTooltip(arenaUnit) then return true end
     end
+    -- 1.36.39: skip the inline probe when unit is a confirmed
+    -- friendly.  Party healer detection is already handled by
+    -- IsHealer(unit) above (UnitGroupRolesAssigned works for
+    -- teammates); running the arena probe on friendlies risks
+    -- flipping non-healer friendly plates into HEALER territory
+    -- if a name coincidentally matches an arena opponent slot
+    -- (or if secret-secret name collision slips past the
+    -- issecretvalue guard).
     if unit and _IsInArena() and GetArenaOpponentSpec then
-        for i = 1, 3 do
-            local ok, r = pcall(_UnitIsProbablyUnit, unit, "arena" .. i)
-            if ok and r then
-                local specID = GetArenaOpponentSpec(i)
-                if specID and ns.HEALER_SPECS[specID] then return true end
-                break
+        local okF, isFriendlyUnit = pcall(UnitIsFriend, "player", unit)
+        if not (okF and isFriendlyUnit) then
+            for i = 1, 3 do
+                local ok, r = pcall(_UnitIsProbablyUnit, unit, "arena" .. i)
+                if ok and r then
+                    local specID = GetArenaOpponentSpec(i)
+                    if specID and ns.HEALER_SPECS[specID] then return true end
+                    break
+                end
             end
         end
     end
@@ -1374,16 +1398,23 @@ local function _HealerEnemyBody()
     -- binding hasn't yet resolved.  UnitIsProbablyUnit(punit,
     -- "arenaN") matches by name — the ONLY signal that reliably
     -- fires at the first refresh tick before
-    -- _LinkVisiblePlatesToArena's deferred pass has run.  We only
-    -- take the arena token here (arenaUnit variable), NOT the idx,
-    -- because callers downstream only need arenaUnit for
-    -- _IsHealerByTooltip / friend-force logic.  Actual healer
-    -- classification still runs through _IsHealerForPlate which
-    -- has its own equivalent inline probe.
+    -- _LinkVisiblePlatesToArena's deferred pass has run.
+    --
+    -- 1.36.39: only run the probe when punit is NOT confirmed
+    -- friendly.  In 1.36.38 this fired on every plate whose
+    -- ArenaMap binding hadn't resolved — including friendlies — and
+    -- when _UnitIsProbablyUnit's missing issecretvalue guard let
+    -- secret-secret names collide equal, we ended up tagging
+    -- friendly plates with arena indices.  That in turn made the
+    -- arenaUnit branch below force isFriend=false and stamp the
+    -- red enemy cross on our own healer.
     if not arenaUnit and punit and _IsInArena() then
-        for i = 1, 3 do
-            local ok, r = pcall(_UnitIsProbablyUnit, punit, "arena" .. i)
-            if ok and r then arenaUnit = "arena" .. i; break end
+        local okF, isFriendlyPUnit = pcall(UnitIsFriend, "player", punit)
+        if not (okF and isFriendlyPUnit) then
+            for i = 1, 3 do
+                local ok, r = pcall(_UnitIsProbablyUnit, punit, "arena" .. i)
+                if ok and r then arenaUnit = "arena" .. i; break end
+            end
         end
     end
 
@@ -1785,22 +1816,31 @@ function ns:UpdateIndicators(plate, unit)
     -- non-friend players — same rationale as _HealerEnemyBody and
     -- _ClassifyForbiddenBody's arena-override branches.
     --
-    -- 1.36.38: extend the override with the same BBP-style inline
-    -- name-match used in _IsHealerForPlate.  ArenaMap binding may
-    -- not have resolved yet on the first refresh tick, in which
-    -- case ns:GetArenaUnitForPlate returns nil.  UnitIsProbablyUnit
-    -- against arena1..3 catches that case directly.
-    if isFriend ~= false then
-        local matched
+    -- 1.36.39: narrow the override to isFriend == nil ONLY.  In
+    -- 1.36.38 I used `isFriend ~= false`, which fires for truthy too
+    -- — the block was then flipping GENUINELY FRIENDLY plates whose
+    -- UnitIsFriend returned 1 to isFriend=false whenever the inline
+    -- probe false-matched (secret-secret name collision).  Result
+    -- the user saw: friendly healer wearing a red cross.
+    --
+    -- UnitIsFriend returns:
+    --   * 1     -> definitely friendly (party / raid / arena team)
+    --   * nil   -> unknown / redacted token (anonymised arena enemy)
+    --   * false -> definitely enemy
+    --
+    -- Only the nil case needs disambiguation.  Both binding and
+    -- inline probe are attempted; the inline probe now has the
+    -- issecretvalue guard from BBP midnight so it won't false-match
+    -- on double-anonymised names.
+    if isFriend == nil then
         if ns.GetArenaUnitForPlate and ns:GetArenaUnitForPlate(plate) then
-            matched = true
+            isFriend = false
         elseif unit and _IsInArena() then
             for i = 1, 3 do
                 local ok, r = pcall(_UnitIsProbablyUnit, unit, "arena" .. i)
-                if ok and r then matched = true; break end
+                if ok and r then isFriend = false; break end
             end
         end
-        if matched then isFriend = false end
     end
     if isFriend then
         healerCfg = I.healerFriendly
