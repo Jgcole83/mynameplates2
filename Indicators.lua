@@ -1482,6 +1482,64 @@ local function _HealerEnemyBody()
         isFriend = false
         isPlayer = true
     end
+
+    -- 1.36.43: sticky enemy re-classification without a new field.
+    --
+    -- Symptom this fixes: enemy healer cross "randomly appears" (when
+    -- AM binding resolves + tooltip data cooperates) then disappears
+    -- again a tick later.  Trace of the flicker:
+    --
+    --   1. RefreshHealerCrosses fires.
+    --   2. _HideHealerMarkers hides every marker on every plate.
+    --   3. _HealerEnemyBody runs for the healer's plate on a tick
+    --      where retail 12.x anti-scripting redacted the API — the
+    --      inline UnitIsProbablyUnit probe against arena1..3 found
+    --      no match, so arenaUnit stayed nil.  pcall(UnitIsFriend)
+    --      returned nil for the anonymised token, so isFriend is
+    --      nil (not false).
+    --   4. `if isFriend ~= false then return end` bails — nil ~= false
+    --      is TRUE in Lua, so the bail fires whenever isFriend is
+    --      undetermined.
+    --   5. _IsHealerForPlate is never called, so 1.36.40's sticky
+    --      plate.MyNP_IsHealerCache is BYPASSED entirely and the
+    --      cross stays hidden.
+    --   6. Next tick where the API cooperates, cross reappears.
+    --      Repeat -> visible flicker + "randomly appears".
+    --
+    -- 1.36.40 stickied _IsHealerForPlate's positive result but the
+    -- bail above the call meant that stickiness only survived ticks
+    -- where we ACTUALLY reached _IsHealerForPlate.  1.36.41 tried to
+    -- solve this with a top-level MyNP_KnownEnemyHealer sticky flag
+    -- + direct early-return _ApplyHealerMarkerOnPlate call; that
+    -- broke detection entirely (likely a taint interaction from
+    -- setting a new field on a forbidden frame + calling
+    -- _ApplyHealerMarkerOnPlate from inside the early return before
+    -- the isFriend / isPlayer state was resolved).
+    --
+    -- This version uses ONLY the existing 1.36.40 MyNP_IsHealerCache
+    -- flag (which is only ever set from inside _IsHealerForPlate's
+    -- wrapper — a safe path that has already survived).  When the
+    -- flag is set AND our current tick's isFriend / arenaUnit can't
+    -- confirm the plate as enemy, we assume "still enemy healer"
+    -- and re-run the standard code path.  _IsHealerForPlate will
+    -- short-circuit on its own sticky cache, and
+    -- _ApplyHealerMarkerOnPlate stamps via the same route as the
+    -- first-time detection — no new state, no early-return jump.
+    --
+    -- Safety:
+    --   * Only fires when isFriend is nil (undetermined).  If
+    --     UnitIsFriend returned 1 or false, we trust that.
+    --   * Only fires when MyNP_IsHealerCache is truthy, which
+    --     requires _IsHealerForPlate to have PREVIOUSLY returned
+    --     true for this plate.  No fresh false-positive risk.
+    --   * Cleared on NAME_PLATE_UNIT_REMOVED (existing 1.36.40
+    --     handler at Indicators.lua ~L793) so a recycled plate
+    --     frame doesn't inherit the previous unit's classification.
+    if isFriend == nil and plate and plate.MyNP_IsHealerCache then
+        isFriend = false
+        isPlayer = true
+    end
+
     if isFriend ~= false then return end
     if not isPlayer then return end
 
