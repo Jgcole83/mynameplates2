@@ -783,10 +783,13 @@ AMListener:SetScript("OnEvent", function(_, event, arg1)
         -- 1.36.40: also clear the sticky healer cache so a recycled
         -- plate frame doesn't inherit the previous unit's healer
         -- classification.
+        -- 1.36.41: also clear the enemy-healer sticky-stamp flag
+        -- (same rationale — recycled plate must not inherit).
         if arg1 then
             local plate = C_NamePlate.GetNamePlateForUnit(arg1, true)
             if plate then
-                plate.MyNP_IsHealerCache = nil
+                plate.MyNP_IsHealerCache    = nil
+                plate.MyNP_KnownEnemyHealer = nil
                 AM:Untag(plate)
             end
         end
@@ -1428,6 +1431,46 @@ end
 local function _HealerEnemyBody()
     local plate = _healerLoopState.plate
     local I     = _healerLoopState.I
+
+    -- 1.36.41: sticky enemy-healer re-stamp — runs BEFORE any of the
+    -- fallible API checks below.
+    --
+    -- Symptom this fixes: enemy healer cross randomly appears mid-
+    -- match then disappears again.  What happens without this
+    -- early re-stamp:
+    --   1. RefreshHealerCrosses fires.
+    --   2. _HideHealerMarkers hides every marker on every plate.
+    --   3. Enemy walk reaches _HealerEnemyBody for the healer's plate.
+    --   4. Blizzard's retail 12.x anti-scripting layer momentarily
+    --      redacts UnitIsFriend / UnitName / UnitIsUnit for a single
+    --      tick — pcall(UnitIsFriend, ...) returns nil, the arena
+    --      binding lookup returns nil, the inline UnitIsProbablyUnit
+    --      probe finds no name match against arena1..3, and the
+    --      `if isFriend ~= false then return end` guard bails.
+    --   5. We never reach _IsHealerForPlate — sticky
+    --      MyNP_IsHealerCache from 1.36.40 is bypassed entirely —
+    --      and the marker stays hidden until the NEXT
+    --      RefreshHealerCrosses where the API returns real data.
+    --   6. Repeats -> flicker.
+    --
+    -- 1.36.40 stickied _IsHealerForPlate; 1.36.41 sticks the whole
+    -- decision to re-stamp.  A plate never legitimately transitions
+    -- from enemy-healer to not-enemy-healer for the SAME unit — the
+    -- only failure mode is transient API redaction — so pinning
+    -- the positive is safe.  Recycled plate frames clear the flag
+    -- via NAME_PLATE_UNIT_REMOVED so a new unit doesn't inherit the
+    -- previous unit's stamp.
+    --
+    -- Mirrors BBP's SpecCache[guid] pattern
+    -- (BetterBlizzPlates.lua ~line 6620) plus retail_healer.lua's
+    -- BBP.pendingHealerCount bookkeeping — once specID is known,
+    -- IsSpecHealer returns cached without re-hitting Blizzard's
+    -- jittery live APIs.
+    if plate and plate.MyNP_KnownEnemyHealer and I and I.healerEnemy then
+        _ApplyHealerMarkerOnPlate(plate, false, I.healerEnemy)
+        return
+    end
+
     local uf = plate and plate.UnitFrame
     local punit = uf and (uf.unit or uf.displayedUnit)
     local arenaUnit = ns:GetArenaUnitForPlate(plate)
@@ -1471,6 +1514,7 @@ local function _HealerEnemyBody()
     if not isPlayer then return end
 
     if _IsHealerForPlate(plate, punit) then
+        if plate then plate.MyNP_KnownEnemyHealer = true end
         _ApplyHealerMarkerOnPlate(plate, false, I.healerEnemy)
     end
 end
@@ -1574,6 +1618,7 @@ function ns:RefreshHealerCrosses()
                         end
                         local cached = ns:GetSpecByPlate(plate)
                         if cached and specOnly[cached] then
+                            plate.MyNP_KnownEnemyHealer = true
                             _ApplyHealerMarkerOnPlate(plate, false, I.healerEnemy)
                         end
                     end)
@@ -1617,6 +1662,7 @@ function ns:RefreshHealerCrosses()
             if prep and prep.isHealer then
                 local plate = ns:GetPlateByArena(i)
                 if plate and not _PlateHasHealerMark(plate) then
+                    plate.MyNP_KnownEnemyHealer = true
                     _ApplyHealerMarkerOnPlate(plate, false, I.healerEnemy)
                 end
             end
