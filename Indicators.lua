@@ -286,29 +286,42 @@ local function _LinkVisiblePlatesToArena()
         if not (ns.GetArenaByPlate and ns:GetArenaByPlate(plate)) then
             local uf = plate.UnitFrame
             local unit = uf and (uf.unit or uf.displayedUnit)
-            for i = 1, 3 do
-                local matched
-                if unit and UnitIsUnit then
-                    local ok, r = pcall(UnitIsUnit, unit, "arena" .. i)
-                    if ok and r then matched = true end
-                end
-                if (not matched) and unit then
-                    -- 1.36.36: BBP-style name match.  This is the
-                    -- key signal at gate open — UnitIsUnit returns
-                    -- false for anonymised nameplate tokens even
-                    -- against arena1..3 targets, but UnitName still
-                    -- returns real names on both sides.
-                    local ok, r = pcall(_UnitIsProbablyUnit, unit, "arena" .. i)
-                    if ok and r then matched = true end
-                end
-                if (not matched) and C_NamePlate.GetNamePlateForUnit then
-                    local ok, p = pcall(C_NamePlate.GetNamePlateForUnit,
-                                        "arena" .. i, true)
-                    if ok and p == plate then matched = true end
-                end
-                if matched then
-                    pcall(ns.LinkPlateToArena, ns, plate, i)
-                    break
+            -- 1.36.45: skip friendly plates.  Prevents the same
+            -- friendly mis-tag that RescanFingerprint and
+            -- RescanDirect are now guarded against.  The
+            -- C_NamePlate.GetNamePlateForUnit("arenaN") check below
+            -- can also mis-match if Blizzard is recycling plate
+            -- frames between an out-of-range arena opponent and a
+            -- friendly party member just entering range.
+            if unit then
+                local okF, f = pcall(UnitIsFriend, "player", unit)
+                if okF and f then unit = nil end
+            end
+            if unit then
+                for i = 1, 3 do
+                    local matched
+                    if UnitIsUnit then
+                        local ok, r = pcall(UnitIsUnit, unit, "arena" .. i)
+                        if ok and r then matched = true end
+                    end
+                    if not matched then
+                        -- 1.36.36: BBP-style name match.  This is the
+                        -- key signal at gate open — UnitIsUnit returns
+                        -- false for anonymised nameplate tokens even
+                        -- against arena1..3 targets, but UnitName still
+                        -- returns real names on both sides.
+                        local ok, r = pcall(_UnitIsProbablyUnit, unit, "arena" .. i)
+                        if ok and r then matched = true end
+                    end
+                    if (not matched) and C_NamePlate.GetNamePlateForUnit then
+                        local ok, p = pcall(C_NamePlate.GetNamePlateForUnit,
+                                            "arena" .. i, true)
+                        if ok and p == plate then matched = true end
+                    end
+                    if matched then
+                        pcall(ns.LinkPlateToArena, ns, plate, i)
+                        break
+                    end
                 end
             end
         end
@@ -526,6 +539,16 @@ function AM:RescanDirect()
         if not self.plateToIndex[plate] then
             local uf = plate.UnitFrame
             local unit = uf and (uf.unit or uf.displayedUnit)
+            -- 1.36.45: skip friendly plates.  Same rationale as
+            -- RescanFingerprint's friendly-guard — arena slots are
+            -- opponents only, and even UnitIsProbablyUnit can
+            -- false-match a friendly plate against an anonymised
+            -- arenaN when both UnitName returns are transiently
+            -- equal (e.g. duplicate empty strings during load).
+            if unit then
+                local okF, f = pcall(UnitIsFriend, "player", unit)
+                if okF and f then unit = nil end
+            end
             if unit then
                 for i = 1, 3 do
                     local matched
@@ -598,7 +621,28 @@ function AM:RescanFingerprint()
     -- single-match case), then narrow to untagged-only indices.
     local function tryMatch(candidatePool)
         for _, p in ipairs(plates) do
+            -- 1.36.45: skip friendly plates.  Diagnostic showed
+            -- friendly party healer Ryzox getting `_plateByArena
+            -- idx=3` (DK opponent slot) — clearly wrong.  Arena
+            -- slots are exclusively enemy opponents, so any
+            -- fingerprint that accidentally matches a friendly
+            -- to an enemy arena slot (e.g. two casters with same
+            -- power type, or plate-frame recycling from a
+            -- previous arena leaving stale fingerprint data)
+            -- must be filtered out here.  UnitIsFriend works on
+            -- friendly nameplate tokens (they aren't redacted).
+            local skip = false
             if not self.plateToIndex[p.plate] then
+                local puf   = p.plate.UnitFrame
+                local punit = puf and (puf.unit or puf.displayedUnit)
+                if punit then
+                    local okF, f = pcall(UnitIsFriend, "player", punit)
+                    if okF and f then skip = true end
+                end
+            else
+                skip = true
+            end
+            if not skip then
                 local idx = _resolveIndex(p.props, candidatePool)
                 if idx and not self.indexToPlate[idx] then
                     self:Tag(p.plate, idx)
@@ -654,6 +698,14 @@ end
 function AM:LearnFromIntermediary(intermediary)
     if not _IsInArena() then return end
     if not UnitExists(intermediary) then return end
+
+    -- 1.36.45: skip if the intermediary is a friendly.  Arena
+    -- slots are enemy opponents only; even if the intermediary
+    -- name coincidentally matches a friendly party member's
+    -- name (unlikely but possible in edge cases), we must not
+    -- link a friendly plate to an enemy arena slot.
+    local okF, isFriendly = pcall(UnitIsFriend, "player", intermediary)
+    if okF and isFriendly then return end
 
     -- Identify which arena slot the intermediary IS.  UnitIsUnit is
     -- authoritative when it works; the 1.36.36 name-match fallback
@@ -817,6 +869,24 @@ AMListener:SetScript("OnEvent", function(_, event, arg1)
             if plate then
                 plate.MyNP_IsHealerCache = nil
                 AM:Untag(plate)
+                -- 1.36.45: also drop the definitive `_plateByArena`
+                -- binding.  Diagnostic showed a stale binding
+                -- (`_plateByArena[3] = friendly Ryzox's plate`)
+                -- surviving into the next arena PREP after that
+                -- plate frame was recycled — `AM:Untag` only clears
+                -- `AM.plateToIndex` / `indexToPlate`, leaving
+                -- `_plateByArena[i]` pointing at whatever plate
+                -- frame was last bound.  Without the untangle, when
+                -- a friendly-guard misses on the very first tick
+                -- (e.g. UnitIsFriend transiently nil while the token
+                -- is still redacted) and the fingerprint / direct
+                -- path binds a friendly plate to an arena slot,
+                -- ADDITIVE #2 will paint an enemy healer cross on
+                -- the wrong plate for the remainder of that plate's
+                -- lifetime.
+                if ns.UnlinkPlateFromArena then
+                    pcall(ns.UnlinkPlateFromArena, ns, plate)
+                end
             end
         end
     elseif event == "PLAYER_TARGET_CHANGED" then
@@ -1002,7 +1072,35 @@ end
 -- so we absolutely need the inline arena-slot probe.
 local function _IsHealerForPlate(plate, unit)
     if unit and IsHealer(unit) then return true end
-    local arenaUnit, idx = plate and ns:GetArenaUnitForPlate(plate)
+    -- 1.36.45: split the `plate and ns:GetArenaUnitForPlate(plate)`
+    -- assignment because Lua's `and` operator only propagates a
+    -- SINGLE value from the right-hand expression, even when that
+    -- expression is a function call returning multiple values.  With
+    -- the old one-liner `local arenaUnit, idx = plate and
+    -- ns:GetArenaUnitForPlate(plate)`, `idx` was ALWAYS nil (even
+    -- when the AM binding was set), so the `if idx then` branch
+    -- below never fired and GetArenaOpponentSpec(idx) was never
+    -- consulted -- which is the exact symptom user's `/mnp cross`
+    -- diagnostic showed:
+    --   AM binding: arena1 (idx=1)          <-- binding IS set
+    --   IsHealerByArenaSpec=false            <-- UnitIsUnit path fails
+    --   IsHealerByTooltip=false              <-- tooltip path fails
+    --   IsHealer=false                       <-- IsHealer chain fails
+    --   _IsHealerForPlate=false              <-- <-- BUG: idx=1 was
+    --                                        --      lost inside _IsHealerForPlate
+    -- The reference codebase (Desktop\MyNamePlates) had the exact
+    -- same one-liner; that codebase's enemy healer cross worked
+    -- via user-target/mouseover leading to _IsHealerByTooltip
+    -- returning true directly (bypassing the broken idx branch),
+    -- which is why the bug wasn't visible.  Now that fingerprint
+    -- match populates idx without user interaction (via 1.36.44's
+    -- RescanFingerprint -> LinkPlateToArena chain), fixing the
+    -- assignment is what actually enables ARENA_PREP-driven
+    -- gate-open detection.
+    local arenaUnit, idx
+    if plate then
+        arenaUnit, idx = ns:GetArenaUnitForPlate(plate)
+    end
     if idx then
         local specID = GetArenaOpponentSpec and GetArenaOpponentSpec(idx)
         if specID and ns.HEALER_SPECS[specID] then return true end
