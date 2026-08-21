@@ -933,6 +933,24 @@ end
 -- canonical arenaN token for forbidden plates and check spec via
 -- GetArenaOpponentSpec — the only reliable path for fully anonymized
 -- arena enemy plates.
+--
+-- 1.36.38: added BBP-style inline UnitIsProbablyUnit probe as a
+-- third fallback for the case where ArenaMap binding hasn't yet
+-- resolved when the check runs.  This is a direct crib of BBP's
+-- IsSpecHealer branch for issecretvalue(guid) plates
+-- (BetterBlizzPlates.lua ~line 6584), verified against their
+-- midnight retail branch.  Bypasses persistent binding entirely
+-- and asks Blizzard on-demand which arena slot this plate is by
+-- name — the ONLY path that reliably fires at the very first
+-- refresh tick, BEFORE _LinkVisiblePlatesToArena has run its
+-- deferred pass.
+--
+-- Why classes don't need this: _GetClassFile primary #1
+-- (UnitClass(unit)) returns real class file even on anonymised
+-- tokens in retail 12.x, so class icons render without any
+-- binding.  Healer detection has no equivalent primary — role /
+-- arena-spec via UnitIsUnit / tooltip all fail on anonymised —
+-- so we absolutely need the inline arena-slot probe.
 local function _IsHealerForPlate(plate, unit)
     if unit and IsHealer(unit) then return true end
     local arenaUnit, idx = plate and ns:GetArenaUnitForPlate(plate)
@@ -940,6 +958,16 @@ local function _IsHealerForPlate(plate, unit)
         local specID = GetArenaOpponentSpec and GetArenaOpponentSpec(idx)
         if specID and ns.HEALER_SPECS[specID] then return true end
         if arenaUnit and _IsHealerByTooltip(arenaUnit) then return true end
+    end
+    if unit and _IsInArena() and GetArenaOpponentSpec then
+        for i = 1, 3 do
+            local ok, r = pcall(_UnitIsProbablyUnit, unit, "arena" .. i)
+            if ok and r then
+                local specID = GetArenaOpponentSpec(i)
+                if specID and ns.HEALER_SPECS[specID] then return true end
+                break
+            end
+        end
     end
     return false
 end
@@ -1342,6 +1370,23 @@ local function _HealerEnemyBody()
     local punit = uf and (uf.unit or uf.displayedUnit)
     local arenaUnit = ns:GetArenaUnitForPlate(plate)
 
+    -- 1.36.38: BBP-style inline fallback when persistent ArenaMap
+    -- binding hasn't yet resolved.  UnitIsProbablyUnit(punit,
+    -- "arenaN") matches by name — the ONLY signal that reliably
+    -- fires at the first refresh tick before
+    -- _LinkVisiblePlatesToArena's deferred pass has run.  We only
+    -- take the arena token here (arenaUnit variable), NOT the idx,
+    -- because callers downstream only need arenaUnit for
+    -- _IsHealerByTooltip / friend-force logic.  Actual healer
+    -- classification still runs through _IsHealerForPlate which
+    -- has its own equivalent inline probe.
+    if not arenaUnit and punit and _IsInArena() then
+        for i = 1, 3 do
+            local ok, r = pcall(_UnitIsProbablyUnit, punit, "arena" .. i)
+            if ok and r then arenaUnit = "arena" .. i; break end
+        end
+    end
+
     local isFriend, isPlayer
     if punit then
         local ok1, f = pcall(UnitIsFriend, "player", punit)
@@ -1739,8 +1784,23 @@ function ns:UpdateIndicators(plate, unit)
     -- on a redacted token.  Arena enemies are, by definition,
     -- non-friend players — same rationale as _HealerEnemyBody and
     -- _ClassifyForbiddenBody's arena-override branches.
-    if ns.GetArenaUnitForPlate and ns:GetArenaUnitForPlate(plate) then
-        isFriend = false
+    --
+    -- 1.36.38: extend the override with the same BBP-style inline
+    -- name-match used in _IsHealerForPlate.  ArenaMap binding may
+    -- not have resolved yet on the first refresh tick, in which
+    -- case ns:GetArenaUnitForPlate returns nil.  UnitIsProbablyUnit
+    -- against arena1..3 catches that case directly.
+    if isFriend ~= false then
+        local matched
+        if ns.GetArenaUnitForPlate and ns:GetArenaUnitForPlate(plate) then
+            matched = true
+        elseif unit and _IsInArena() then
+            for i = 1, 3 do
+                local ok, r = pcall(_UnitIsProbablyUnit, unit, "arena" .. i)
+                if ok and r then matched = true; break end
+            end
+        end
+        if matched then isFriend = false end
     end
     if isFriend then
         healerCfg = I.healerFriendly
