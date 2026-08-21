@@ -779,9 +779,16 @@ AMListener:SetScript("OnEvent", function(_, event, arg1)
         -- on this plate frame fires its deferred Refresh BEFORE our
         -- deferred Untag — leaving a stale plate->slot binding that
         -- causes the new unit's spec / class / aura to fail lookup.
+        --
+        -- 1.36.40: also clear the sticky healer cache so a recycled
+        -- plate frame doesn't inherit the previous unit's healer
+        -- classification.
         if arg1 then
             local plate = C_NamePlate.GetNamePlateForUnit(arg1, true)
-            if plate then AM:Untag(plate) end
+            if plate then
+                plate.MyNP_IsHealerCache = nil
+                AM:Untag(plate)
+            end
         end
     elseif event == "PLAYER_TARGET_CHANGED" then
         _Defer(function()
@@ -994,6 +1001,37 @@ local function _IsHealerForPlate(plate, unit)
         end
     end
     return false
+end
+
+----------------------------------------------------------------------
+-- 1.36.40: sticky per-plate healer cache.
+--
+-- Retail 12.x anti-scripting can make UnitName / UnitIsUnit /
+-- UnitGroupRolesAssigned / GetArenaOpponentSpec return valid data
+-- one tick and secret-redacted the next.  Without stickiness this
+-- causes the healer cross to FLICKER — one RefreshHealerCrosses
+-- pass stamps the cross when the probe succeeds, then
+-- UpdateIndicators fires 100 ms later, gets a false from
+-- _IsHealerForPlate because a required API transiently returned
+-- nothing, and hides the marker.
+--
+-- Fix: wrap _IsHealerForPlate in a sticky cache keyed on the plate
+-- frame.  Once we successfully classify a plate as healer, keep
+-- it classified until Blizzard recycles the plate for a new unit
+-- (NAME_PLATE_UNIT_REMOVED, handled below in the AMListener).  A
+-- plate never legitimately transitions from healer to non-healer
+-- for the same unit — the only failure mode is transient API
+-- unavailability, so stickiness is safe.
+--
+-- Mirrors BBP.SpecCache[guid] pattern (BetterBlizzPlates.lua
+-- ~line 6620): cache the positive result to survive
+-- Blizzard's data-availability jitter.
+local _IsHealerForPlate_uncached = _IsHealerForPlate
+_IsHealerForPlate = function(plate, unit)
+    if plate and plate.MyNP_IsHealerCache then return true end
+    local r = _IsHealerForPlate_uncached(plate, unit)
+    if r and plate then plate.MyNP_IsHealerCache = true end
+    return r
 end
 
 -- Clear cache on PLAYER_ENTERING_WORLD (new arena, GUIDs may reuse)
@@ -1879,7 +1917,22 @@ function ns:UpdateIndicators(plate, unit)
     -- plate-aware helper (_GetClassFile) which is why classes
     -- survive UpdateIndicators's per-frame rewrite while the healer
     -- cross previously did not.
-    if healerCfg and healerCfg.enabled == "1"
+    -- 1.36.40: when isFriend can't be determined, skip the healer
+    -- block entirely and let RefreshHealerCrosses be authoritative.
+    -- This mirrors _ClassifyForbiddenBody's nil-bail for class
+    -- icons (which is why class icons already survive the
+    -- prep-phase data jitter that used to make the healer cross
+    -- flicker or paint-wrong-color).
+    --
+    -- Before this bail:
+    --   * Friendly party healer during arena prep -> UnitIsFriend
+    --     briefly returned nil, isFriend fell through to enemy,
+    --     UpdateIndicators repainted the cross RED for the split
+    --     second before UnitIsFriend resolved.
+    --   * Anonymised arena enemy where _IsHealerForPlate result
+    --     jittered -> UpdateIndicators would Hide() the cross that
+    --     RefreshHealerCrosses had just stamped, causing flicker.
+    if isFriend ~= nil and healerCfg and healerCfg.enabled == "1"
        and (_IsHealerForPlate(plate, unit) or healerTest) then
         -- 1.36.22: bare Texture return from _GetHealer (v1.24.0 path),
         -- so SetDesaturated / SetVertexColor call directly on tex.
@@ -1902,7 +1955,13 @@ function ns:UpdateIndicators(plate, unit)
             end
             pcall(tex.Show, tex)
         end
-    elseif plate.MyNP_HealerMarker then
+    elseif isFriend ~= nil and plate.MyNP_HealerMarker then
+        -- Same nil-guard on hide: don't hide a marker that
+        -- RefreshHealerCrosses may have just stamped just because
+        -- _IsHealerForPlate transiently returned false while
+        -- Blizzard's API data is jittering.  Sticky healer cache
+        -- (MyNP_IsHealerCache) plus this guard together eliminate
+        -- the flicker.
         pcall(plate.MyNP_HealerMarker.Hide, plate.MyNP_HealerMarker)
     end
 
